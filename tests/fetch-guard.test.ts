@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { DEFAULT_CONFIG, applyModePreset, normalizeConfig } from '../src/shared/config';
+import { DEFAULT_CONFIG, applyModePreset, normalizeConfig, type GuardConfig } from '../src/shared/config';
 import { createGuardedFetch, type NetworkTraceEvent } from '../src/main-world/fetch-guard';
 import { detectConversationSchema } from '../src/main-world/schema-validator';
 
@@ -37,6 +37,23 @@ describe('fetch guard preflight history suppression', () => {
     expect(statuses).toHaveLength(1);
   });
 
+  it('does not release an older-page request while config resolution is still pending', async () => {
+    const nativeFetch = vi.fn(async () => paginatedResponse()) as unknown as typeof fetch;
+    let resolveConfig!: (config: GuardConfig) => void;
+    const pendingConfig = new Promise<GuardConfig>((resolve) => { resolveConfig = resolve; });
+    const guard = createGuardedFetch(nativeFetch, () => pendingConfig, () => undefined, () => undefined);
+    const url = `${location.origin}/backend-api/conversations/abc/messages?before=cursor&num_turns=100`;
+
+    const pendingResponse = guard(url);
+    await Promise.resolve();
+    expect(nativeFetch).not.toHaveBeenCalled();
+
+    resolveConfig(applyModePreset(DEFAULT_CONFIG, 'ultra-lite'));
+    const response = await pendingResponse;
+    expect(nativeFetch).not.toHaveBeenCalled();
+    expect((await response.json()).messages).toEqual([]);
+  });
+
   it('calls nativeFetch when matching manual expansion is active', async () => {
     const nativeFetch = vi.fn(async () => paginatedResponse()) as unknown as typeof fetch;
     const config = normalizeConfig({
@@ -61,14 +78,15 @@ describe('fetch guard preflight history suppression', () => {
     expect(nativeFetch).toHaveBeenCalledTimes(1);
   });
 
-  it('fails open to nativeFetch for an unknown older-page query shape', async () => {
+  it('suppresses matching older-page requests even when ChatGPT adds query flags', async () => {
     const nativeFetch = vi.fn(async () => paginatedResponse()) as unknown as typeof fetch;
     const guard = createGuardedFetch(nativeFetch, async () => DEFAULT_CONFIG, () => undefined, () => undefined);
     const url = `${location.origin}/backend-api/conversations/abc/messages?before=cursor&new_internal_flag=1`;
     const response = await guard(url);
-    expect(nativeFetch).toHaveBeenCalledTimes(1);
+    expect(nativeFetch).not.toHaveBeenCalled();
     const data = await response.json();
-    expect(data.messages).toHaveLength(1);
+    expect(data.messages).toEqual([]);
+    expect(data.page_info.has_previous_page).toBe(false);
   });
 
   it('still rewrites the initial Ultra Lite request from 10 to 4', async () => {
