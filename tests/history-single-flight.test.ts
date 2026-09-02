@@ -54,7 +54,7 @@ describe('history single-flight', () => {
     await Promise.all([disabledFetch(url), disabledFetch(url)]);
     expect(nativeFetch).toHaveBeenCalledTimes(2);
 
-    nativeFetch.mockClear();
+    vi.mocked(nativeFetch).mockClear();
     const fullFetch = createHistorySingleFlightFetch(nativeFetch, () => full);
     await Promise.all([fullFetch(url), fullFetch(url)]);
     expect(nativeFetch).toHaveBeenCalledTimes(2);
