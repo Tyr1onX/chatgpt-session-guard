@@ -66,13 +66,11 @@ export function isKnownOlderPageRequestShape(classification: ClassifiedRequest):
   if (classification.method !== 'GET' || classification.kind !== 'paginated-conversation-page') return false;
   const before = classification.url.searchParams.get('before');
   if (!before) return false;
-  // `before` is the semantic marker for an older-history page on this exact endpoint.
-  // ChatGPT can add internal query flags without changing that meaning; fail-closed here so
-  // harmless parameter drift cannot bypass Ultra Lite's zero older-page network guarantee.
-  if (classification.url.searchParams.has('after')) return false;
-  const numTurns = classification.url.searchParams.get('num_turns');
-  if (numTurns !== null && (!/^\d+$/.test(numTurns) || Number(numTurns) < 1 || Number(numTurns) > 100)) return false;
-  return true;
+  // On this exact endpoint a non-empty `before` cursor is the semantic marker for an
+  // older-history page. Query flags and page-size parameters may drift independently,
+  // so they must not punch a hole through the zero older-page network guarantee.
+  // A conflicting forward cursor is treated conservatively as an unknown shape.
+  return !classification.url.searchParams.has('after');
 }
 
 export function shouldSuppressOlderHistory(classification: ClassifiedRequest, config: GuardConfig): boolean {
