@@ -1,80 +1,103 @@
 # Network Guard Validation
 
-Status: **PENDING AUTHENTICATED CHROME VALIDATION**
+## Current supported conversation loading paths
 
-No private conversation content should be copied into this document. Record only endpoint shape, request method, numeric pagination parameters, schema family, and whether Session Guard modified the request.
+ChatGPT Session Guard recognizes only narrowly scoped conversation-history GET requests.
 
-## Expected current request families
-
-Session Guard only considers these GET request shapes:
+### Current paginated path
 
 ```text
-/backend-api/conversations/{conversationId}
-/backend-api/conversations/{conversationId}/messages?before={cursor}
-/backend-api/conversation/{conversationId}
-/backend-api/shared_conversation/{conversationId}
+GET /backend-api/conversations/{conversationId}
+GET /backend-api/conversations/{conversationId}/messages?before={cursor}
 ```
 
-Everything else must fail open / bypass the interceptor.
+The initial paginated request may include:
 
-## Validation procedure
+```text
+num_turns=N
+```
 
-1. Run `npm run build:debug` and load `dist/` as unpacked.
-2. Open a real long ChatGPT conversation.
-3. Open DevTools → Network.
-4. Filter by `conversations` and reload/switch into the conversation.
-5. Inspect the initial `GET /backend-api/conversations/{id}` request.
-6. Record the original `num_turns` visible when Session Guard is disabled.
-7. Enable Session Guard and repeat from a fresh/reloaded renderer.
-8. Record `__CSG_DEBUG__.snapshot()` and verify:
-   - `networkMode === "paginated"`
-   - `networkModified === true` when the original `num_turns` exceeds the configured recent-round value
-   - `networkRequestedTurns` equals the page's original request value
-   - `networkEffectiveTurns` equals the reduced value sent by Session Guard
-9. Trigger older-history loading only if needed and confirm `/messages?before=...` is not rewritten.
-10. Exercise normal generation, tool calls, confirmation, file upload and connector UI and verify those requests are untouched.
+When the schema and query are recognized, Session Guard may reduce the initial `num_turns` value to the configured recent-round limit. It never increases the requested history amount.
 
-## Initial conversation request
+Cursor/history-page requests are recognized for metrics but are not rewritten.
 
-| Field | Extension Off | Session Guard On |
-|---|---|---|
-| Method | PENDING | PENDING |
-| Path | PENDING | PENDING |
-| Original `num_turns` | PENDING | PENDING |
-| Effective `num_turns` | N/A | PENDING |
-| Response schema | PENDING | PENDING |
-| `networkMode` | N/A | PENDING |
-| `networkModified` | N/A | PENDING |
+### Legacy compatibility path
 
-## Older-page request
+```text
+GET /backend-api/conversation/{conversationId}
+GET /backend-api/shared_conversation/{conversationId}
+```
 
-| Field | Result |
-|---|---|
-| Method | PENDING |
-| Path includes `/messages` | PENDING |
-| `before` cursor present | PENDING |
-| Request rewritten by Session Guard | PENDING — must be **No** |
-| Response passed through | PENDING |
+Legacy JSON is modified only when strict mapping/current-node validation succeeds. Unknown or malformed structures fail open.
 
-## Explicit non-interception checks
+## Explicit non-targets
 
-| Request class | Result |
-|---|---|
-| POST conversation / model generation | PENDING — must bypass |
-| Streaming / SSE | PENDING — must bypass |
-| `stream_status` | PENDING — must bypass |
-| `textdocs` | PENDING — must bypass |
-| Tool execution | PENDING — must bypass |
-| Confirmation | PENDING — must bypass |
-| Permission / OAuth confirmation | PENDING — must bypass |
-| File upload | PENDING — must bypass |
-| Authentication/session | PENDING — must bypass |
-| Settings/models/account | PENDING — must bypass |
+The request classifier does not intentionally modify:
 
-## Privacy rule
+```text
+POST conversation
+streaming / SSE
+stream_status
+textdocs
+tool requests
+plugin requests
+confirmation requests
+permission flows
+OAuth
+authentication
+file uploads
+models
+settings
+account endpoints
+```
 
-Do not save response bodies, prompts, assistant messages, uploaded file names/content, connector payloads, access tokens, cookies, authorization headers, or cursor values. Numeric `num_turns` values and endpoint path families are sufficient for this validation.
+There is no broad `/backend-api/*` interception rule.
 
-## Verdict
+## Automatic benchmark evidence
 
-**Not yet validated against the user's authenticated Chrome session.**
+The debug-only Automatic Real Browser Benchmark records these fields at every 10-switch sample:
+
+```text
+networkMode
+networkRequestedTurns
+networkEffectiveTurns
+```
+
+Expected Control behavior:
+
+```text
+Network Guard disabled
+networkMode = disabled (after a conversation-history request is observed)
+no num_turns rewrite
+```
+
+Expected Balanced/Aggressive behavior on the current paginated API:
+
+```text
+networkMode = paginated
+networkRequestedTurns = ChatGPT's original num_turns
+networkEffectiveTurns <= networkRequestedTurns
+```
+
+If the current ChatGPT schema is no longer recognized, the expected result is:
+
+```text
+networkMode = unknown
+modified = false
+```
+
+Network metrics are reset on every conversation route. If ChatGPT serves a conversation from its own SPA cache and no history request is observed for that route, the sample remains `unknown` instead of inheriting a previous conversation's request data.
+
+That is a compatibility degradation, not a reason to rewrite unknown responses.
+
+## Validation status
+
+**PENDING REAL LOGGED-IN RUN**
+
+The automatic harness is implemented and request-classifier/schema tests pass, but this document intentionally does not claim that a current logged-in ChatGPT session has been observed until a generated real-browser benchmark report is reviewed.
+
+Manual DevTools Network inspection may still be useful for debugging a future ChatGPT API change, but it is not required for the normal benchmark workflow.
+
+## Privacy
+
+Network validation stores only endpoint mode and numeric request limits in benchmark results. It does not serialize response bodies or conversation text.

@@ -7,10 +7,11 @@ function visible(element: Element): boolean {
 }
 
 export function hasUnsafeInteractiveState(root: ParentNode = document): boolean {
+  if (/\/(?:auth|oauth|authorize)(?:\/|$)/i.test(location.pathname)) return true;
   const stop = root.querySelector('[data-testid="stop-button"], button[aria-label*="stop" i]');
   if (stop && visible(stop)) return true;
 
-  for (const dialog of root.querySelectorAll('[role="dialog"], [data-testid*="confirmation" i], [data-testid*="permission" i]')) {
+  for (const dialog of root.querySelectorAll('[role="dialog"], [data-testid*="confirmation" i], [data-testid*="permission" i], [data-testid*="oauth" i], [aria-label*="permission" i]')) {
     if (visible(dialog)) return true;
   }
 

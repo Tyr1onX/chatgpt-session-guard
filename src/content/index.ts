@@ -1,12 +1,16 @@
 import { DEFAULT_CONFIG, STORAGE_KEY, normalizeConfig, type GuardConfig } from '../shared/config';
 import { EVENTS, dispatchStringEvent, parseStringEvent, type DebugCommand } from '../shared/events';
 import { EMPTY_METRICS, type DebugMetrics, type PopupRequest, type PopupResponse } from '../shared/types';
+import { AutomaticBenchmarkRunner } from './benchmark-runner';
+import { BenchmarkStatusUi } from './benchmark-ui';
 import { SessionController } from './session-controller';
 
 declare const __CSG_DEBUG_BUILD__: boolean;
 
 let config: GuardConfig = DEFAULT_CONFIG;
 let controller: SessionController | null = null;
+let benchmarkRunner: AutomaticBenchmarkRunner | null = null;
+let benchmarkUi: BenchmarkStatusUi | null = null;
 
 function sendConfigToMainWorld(): void {
   dispatchStringEvent(EVENTS.config, config);
@@ -41,6 +45,57 @@ function setupDebugCommands(): void {
   });
 }
 
+function setupBenchmark(): void {
+  if (!__CSG_DEBUG_BUILD__ || !controller) return;
+  benchmarkUi = new BenchmarkStatusUi(
+    () => { void benchmarkRunner?.stop(); },
+    () => { void benchmarkRunner?.resume(); },
+    () => { void benchmarkRunner?.startSessionGc(); }
+  );
+  benchmarkRunner = new AutomaticBenchmarkRunner(
+    () => controller?.getMetrics() ?? { ...EMPTY_METRICS },
+    () => config,
+    saveConfig,
+    (state) => benchmarkUi?.render(state)
+  );
+  void benchmarkRunner.initialize();
+}
+
+function setupRuntimeMessages(): void {
+  chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
+    const request = message as Partial<PopupRequest>;
+    if (request.type === 'csg:get-state') {
+      const response: PopupResponse = {
+        metrics: controller?.getMetrics() ?? { ...EMPTY_METRICS },
+        benchmark: __CSG_DEBUG_BUILD__ ? benchmarkRunner?.getState() ?? null : null
+      };
+      sendResponse(response);
+      return false;
+    }
+
+    if (!__CSG_DEBUG_BUILD__ || !benchmarkRunner) return false;
+
+    if (request.type === 'csg:benchmark-start') {
+      const loops = request.loops === 10 ? 10 : 5;
+      void benchmarkRunner.start(loops).then((result) => sendResponse(result));
+      return true;
+    }
+    if (request.type === 'csg:benchmark-stop') {
+      void benchmarkRunner.stop().then(() => sendResponse({ ok: true }));
+      return true;
+    }
+    if (request.type === 'csg:benchmark-resume') {
+      void benchmarkRunner.resume().then(() => sendResponse({ ok: true }));
+      return true;
+    }
+    if (request.type === 'csg:session-gc-start') {
+      void benchmarkRunner.startSessionGc().then((result) => sendResponse(result));
+      return true;
+    }
+    return false;
+  });
+}
+
 async function init(): Promise<void> {
   window.addEventListener(EVENTS.requestConfig, sendConfigToMainWorld);
   setupDebugCommands();
@@ -50,6 +105,7 @@ async function init(): Promise<void> {
 
   controller = new SessionController(config, __CSG_DEBUG_BUILD__ ? sendDebugMetrics : undefined);
   controller.start();
+  setupBenchmark();
 
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== 'local' || !changes[STORAGE_KEY]) return;
@@ -58,15 +114,12 @@ async function init(): Promise<void> {
     controller?.updateConfig(config);
   });
 
-  chrome.runtime.onMessage.addListener((message: unknown, _sender, sendResponse) => {
-    const request = message as Partial<PopupRequest>;
-    if (request.type !== 'csg:get-state') return false;
-    const response: PopupResponse = { metrics: controller?.getMetrics() ?? { ...EMPTY_METRICS } };
-    sendResponse(response);
-    return false;
-  });
+  setupRuntimeMessages();
 
-  window.addEventListener('pagehide', () => controller?.destroy(), { once: true });
+  window.addEventListener('pagehide', () => {
+    benchmarkRunner?.destroy();
+    controller?.destroy();
+  }, { once: true });
 }
 
 void init();

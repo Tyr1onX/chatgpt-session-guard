@@ -79,6 +79,10 @@ export class SessionController {
     this.hasInitialNavigation = true;
     this.cleanupScope();
     this.currentConversationId = conversationId;
+    this.networkMode = this.config.enabled && !this.config.temporaryFullHistory ? 'unknown' : 'disabled';
+    this.networkModified = false;
+    this.networkRequestedTurns = null;
+    this.networkEffectiveTurns = null;
 
     if (!conversationId) {
       this.lastSwitchLatencyMs = this.consumeSwitchLatency();

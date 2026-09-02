@@ -1,179 +1,130 @@
-# Real Chrome Benchmark — v0.1
+# Real Browser Benchmark Status
 
-Status: **PENDING USER-SESSION RUN**
+## Status
 
-The automated workspace browser cannot access the user's authenticated ChatGPT session and currently stops at the Cloudflare waiting page. The user's already-running Chrome also does not expose a CDP remote-debugging endpoint. No real-browser values below have been fabricated.
+**PENDING REAL RUN**
 
-## Build used for measurement
+The automatic benchmark harness is implemented, but no logged-in real Chrome benchmark result is committed here yet.
 
-Run:
+This file must not be treated as performance proof until a generated JSON/Markdown report from the debug build has been reviewed.
 
-```sh
-npm run build:debug
-```
+## Required run
 
-Then load `dist/` as an unpacked extension in the real Chrome profile that is already signed in to ChatGPT.
-
-The debug build exposes `window.__CSG_DEBUG__` in the ChatGPT page MAIN world. Production `npm run build` does not expose this helper.
-
-## Workload
-
-Choose five real long conversations A/B/C/D/E, preferably containing a mix of code blocks, Web Search, tool UI, files/images, and long assistant replies.
-
-One loop is:
+Use the one-click workflow in [`automatic-real-browser-benchmark.md`](automatic-real-browser-benchmark.md):
 
 ```text
-A → B → C → D → E → A → C → B → D
+npm run build:debug
+Load dist/
+Open logged-in ChatGPT
+Start Benchmark
+Download results
 ```
 
-Use enough repetitions to reach 100 conversation navigations. Start each mode from a freshly opened/reloaded ChatGPT renderer.
+The default benchmark performs 50 real SPA conversation switches per mode. The extended option performs 100.
 
-Test groups:
+Mandatory modes:
 
-1. Extension Off
-2. Safe
-3. Balanced
-4. Aggressive
+1. Control
+2. Balanced
+3. Aggressive
 
-Do not enable Hard Switch until the Soft SPA tests show retained-memory growth with stable DOM.
+Hard Switch is OFF for all three.
 
-## Collection cadence
+If Aggressive reports stable conversation DOM but strong heap growth, run the optional Session GC benchmark separately.
 
-At switch 0, 10, 20, ... 100 record:
+## Automatic sample schedule
 
-- ChatGPT renderer memory from Chrome Task Manager (`Shift+Esc`)
-- JS heap from debug helper when available
+For 50 switches:
+
+| Switch | Control | Balanced | Aggressive |
+|---:|---|---|---|
+| 0 | PENDING | PENDING | PENDING |
+| 10 | PENDING | PENDING | PENDING |
+| 20 | PENDING | PENDING | PENDING |
+| 30 | PENDING | PENDING | PENDING |
+| 40 | PENDING | PENDING | PENDING |
+| 50 | PENDING | PENDING | PENDING |
+
+For 100 switches, samples at 60/70/80/90/100 are added automatically.
+
+Each generated sample includes numeric values for:
+
 - conversation DOM nodes
 - total document DOM nodes
 - rendered rounds
-- SPA switch count
 - cleanup count
-- network mode
+- hard-switch count
+- Network Guard mode and requested/effective turns
+- JS heap when available
 - switch latency
-- Hard Switch count
+- Long Task count/blocking time when supported
+- route/conversation ID used for benchmark coordination
 
-For Safe/Balanced/Aggressive run in DevTools Console:
+No conversation text is included.
 
-```js
-__CSG_DEBUG__.snapshot()
+## Analysis rules
+
+The generated report performs trend analysis over the full sampled series instead of comparing only switch 0 with the final switch.
+
+Each DOM/heap series is classified as:
+
+```text
+stable
+moderate growth
+strong growth
+N/A
 ```
 
-After the run:
+The report also calculates median and p95 switch latency from all successful switches.
 
-```js
-__CSG_DEBUG__.history()
+A specific diagnostic is emitted when:
+
+```text
+conversation DOM = stable
+JS Heap = strong growth
 ```
 
-The helper never includes conversation body text.
+as:
 
-## Renderer Memory (MB)
+```text
+DOM stable, heap continues growing; likely retained SPA state/cache.
+```
 
-| Switch | Off | Safe | Balanced | Aggressive |
-|---:|---:|---:|---:|---:|
-| 0 | PENDING | PENDING | PENDING | PENDING |
-| 10 | PENDING | PENDING | PENDING | PENDING |
-| 20 | PENDING | PENDING | PENDING | PENDING |
-| 30 | PENDING | PENDING | PENDING | PENDING |
-| 40 | PENDING | PENDING | PENDING | PENDING |
-| 50 | PENDING | PENDING | PENDING | PENDING |
-| 60 | PENDING | PENDING | PENDING | PENDING |
-| 70 | PENDING | PENDING | PENDING | PENDING |
-| 80 | PENDING | PENDING | PENDING | PENDING |
-| 90 | PENDING | PENDING | PENDING | PENDING |
-| 100 | PENDING | PENDING | PENDING | PENDING |
+This condition recommends the separate Session GC benchmark.
 
-## JS Heap (MB)
+## Success criteria
 
-| Switch | Off | Safe | Balanced | Aggressive |
-|---:|---:|---:|---:|---:|
-| 0 | PENDING | PENDING | PENDING | PENDING |
-| 10 | PENDING | PENDING | PENDING | PENDING |
-| 20 | PENDING | PENDING | PENDING | PENDING |
-| 30 | PENDING | PENDING | PENDING | PENDING |
-| 40 | PENDING | PENDING | PENDING | PENDING |
-| 50 | PENDING | PENDING | PENDING | PENDING |
-| 60 | PENDING | PENDING | PENDING | PENDING |
-| 70 | PENDING | PENDING | PENDING | PENDING |
-| 80 | PENDING | PENDING | PENDING | PENDING |
-| 90 | PENDING | PENDING | PENDING | PENDING |
-| 100 | PENDING | PENDING | PENDING | PENDING |
+A generated benchmark may conclude:
 
-## Conversation DOM Nodes
+### proven improvement
 
-| Switch | Off | Safe | Balanced | Aggressive |
-|---:|---:|---:|---:|---:|
-| 0 | PENDING | PENDING | PENDING | PENDING |
-| 10 | PENDING | PENDING | PENDING | PENDING |
-| 20 | PENDING | PENDING | PENDING | PENDING |
-| 30 | PENDING | PENDING | PENDING | PENDING |
-| 40 | PENDING | PENDING | PENDING | PENDING |
-| 50 | PENDING | PENDING | PENDING | PENDING |
-| 60 | PENDING | PENDING | PENDING | PENDING |
-| 70 | PENDING | PENDING | PENDING | PENDING |
-| 80 | PENDING | PENDING | PENDING | PENDING |
-| 90 | PENDING | PENDING | PENDING | PENDING |
-| 100 | PENDING | PENDING | PENDING | PENDING |
+The Control group reproduces sustained growth and an optimized strategy reaches a stable working set without a severe switch-latency regression, or a separately tested Session GC strategy converts retained heap growth into a stable working set.
 
-## Document DOM Nodes
+### partial improvement
 
-| Switch | Off | Safe | Balanced | Aggressive |
-|---:|---:|---:|---:|---:|
-| 0 | PENDING | PENDING | PENDING | PENDING |
-| 10 | PENDING | PENDING | PENDING | PENDING |
-| 20 | PENDING | PENDING | PENDING | PENDING |
-| 30 | PENDING | PENDING | PENDING | PENDING |
-| 40 | PENDING | PENDING | PENDING | PENDING |
-| 50 | PENDING | PENDING | PENDING | PENDING |
-| 60 | PENDING | PENDING | PENDING | PENDING |
-| 70 | PENDING | PENDING | PENDING | PENDING |
-| 80 | PENDING | PENDING | PENDING | PENDING |
-| 90 | PENDING | PENDING | PENDING | PENDING |
-| 100 | PENDING | PENDING | PENDING | PENDING |
+An optimized strategy improves the observed growth class but does not fully stabilize the working set.
 
-## Switch Latency (ms)
+### inconclusive
 
-| Switch | Off | Safe | Balanced | Aggressive |
-|---:|---:|---:|---:|---:|
-| 0 | N/A | N/A | N/A | N/A |
-| 10 | PENDING | PENDING | PENDING | PENDING |
-| 20 | PENDING | PENDING | PENDING | PENDING |
-| 30 | PENDING | PENDING | PENDING | PENDING |
-| 40 | PENDING | PENDING | PENDING | PENDING |
-| 50 | PENDING | PENDING | PENDING | PENDING |
-| 60 | PENDING | PENDING | PENDING | PENDING |
-| 70 | PENDING | PENDING | PENDING | PENDING |
-| 80 | PENDING | PENDING | PENDING | PENDING |
-| 90 | PENDING | PENDING | PENDING | PENDING |
-| 100 | PENDING | PENDING | PENDING | PENDING |
+Examples:
 
-## Interpretation rules
+- Control does not reproduce the target growth.
+- a mode fails navigation/stabilization repeatedly
+- JS heap is unavailable and DOM/latency data is insufficient
+- optimized groups do not clearly separate from Control
 
-- Balanced may reduce layout/paint cost while retaining DOM/React state. If memory still rises, record: `Balanced improves rendering cost but does not solve retained-memory growth.`
-- If Aggressive stabilizes DOM and renderer memory without breaking ChatGPT UI, evaluate a conservative Balanced+ reclamation policy rather than making current Aggressive unconditional default.
-- If DOM remains stable while renderer memory/heap rises monotonically, classify the dominant issue as SPA retained state/cache rather than DOM growth.
-- Only test Hard Switch after that pattern is demonstrated.
-- Hard Switch is considered effective only if a safe reload returns renderer memory close to a fresh baseline and does not interrupt confirmation/upload/generation state.
+### regression
 
-## Compatibility matrix
+An optimization mode produces a worse growth class or a severe latency regression relative to a stable Control.
 
-| Feature | Off | Safe | Balanced | Aggressive | Notes |
-|---|---|---|---|---|---|
-| Normal chat | PENDING | PENDING | PENDING | PENDING | |
-| Code block | PENDING | PENDING | PENDING | PENDING | |
-| Web Search | PENDING | PENDING | PENDING | PENDING | |
-| Thinking | PENDING | PENDING | PENDING | PENDING | |
-| Image | PENDING | PENDING | PENDING | PENDING | |
-| File | PENDING | PENDING | PENDING | PENDING | |
-| Writing Block | PENDING | PENDING | PENDING | PENDING | |
-| GitHub connector | PENDING | PENDING | PENDING | PENDING | |
-| Google Drive connector | PENDING | PENDING | PENDING | PENDING | High priority |
-| Confirmation dialog | PENDING | PENDING | PENDING | PENDING | High priority |
-| Regenerate | PENDING | PENDING | PENDING | PENDING | |
-| Edit message | PENDING | PENDING | PENDING | PENDING | |
-| Branch conversation | PENDING | PENDING | PENDING | PENDING | High priority |
-| Switch while generating | PENDING | PENDING | PENDING | PENDING | |
-| Return to generating chat | PENDING | PENDING | PENDING | PENDING | |
+## Renderer process memory
 
-## Final verdict
+Chrome Task Manager renderer-process memory is intentionally not part of the required automated benchmark because the extension does not request unrelated high-risk permissions or depend on unstable process APIs.
 
-**Not yet proven.** Do not merge to `main` until the real authenticated Chrome run provides evidence that memory growth is materially bounded, or that controlled Session GC reliably restores the renderer near baseline without breaking core ChatGPT behavior.
+It can be supplied as optional external evidence later, but the first-stage benchmark is intentionally based on JS Heap + DOM + switch latency + Long Tasks.
+
+## Rule for merging v0.1
+
+Do not merge `feat/v0.1-session-guard` into `main` solely because the automated harness exists or completes.
+
+A real logged-in benchmark must first provide evidence that the target workload materially improves without breaking core ChatGPT behavior.

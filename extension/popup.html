@@ -38,6 +38,38 @@
 
     <p id="warning" class="warning" hidden>Aggressive mode removes settled old turn subtrees until ChatGPT is reloaded.</p>
 
+    <!-- CSG_DEBUG_START -->
+    <section id="benchmarkSection" class="benchmark">
+      <div class="benchmark-heading">
+        <h2>Benchmark</h2>
+        <span class="debug-badge">Debug</span>
+      </div>
+      <div class="row"><span>Conversations</span><strong id="benchmarkConversations">—</strong></div>
+      <div class="row"><span>Mode</span><strong id="benchmarkMode">Idle</strong></div>
+      <div class="row"><span>Progress</span><strong id="benchmarkProgress">0 / 50</strong></div>
+      <div class="row"><span>DOM</span><strong id="benchmarkDom">—</strong></div>
+      <div class="row"><span>Heap</span><strong id="benchmarkHeap">—</strong></div>
+      <div class="row"><span>Latency</span><strong id="benchmarkLatency">—</strong></div>
+      <label>Run length
+        <select id="benchmarkLoops">
+          <option value="5">50 switches / mode</option>
+          <option value="10">100 switches / mode</option>
+        </select>
+      </label>
+      <p id="benchmarkMessage" class="benchmark-message">Control → Balanced → Aggressive. Hard Switch stays off.</p>
+      <div class="benchmark-actions">
+        <button id="benchmarkStart" type="button">Start Benchmark</button>
+        <button id="benchmarkResume" type="button" class="secondary" hidden>Resume Benchmark</button>
+        <button id="benchmarkStop" type="button" class="secondary" hidden>Stop Benchmark</button>
+      </div>
+      <div id="benchmarkDownloads" class="benchmark-actions" hidden>
+        <button id="benchmarkJson" type="button" class="secondary">Download JSON</button>
+        <button id="benchmarkReport" type="button" class="secondary">Download Report</button>
+      </div>
+      <button id="benchmarkSessionGc" type="button" class="secondary benchmark-gc" hidden>Run Session GC Benchmark</button>
+    </section>
+    <!-- CSG_DEBUG_END -->
+
     <details>
       <summary>Debug metrics</summary>
       <dl id="metrics"></dl>

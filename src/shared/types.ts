@@ -1,3 +1,4 @@
+import type { BenchmarkState } from './benchmark';
 import type { NetworkMode } from './events';
 
 export interface DebugMetrics {
@@ -38,10 +39,16 @@ export const EMPTY_METRICS: DebugMetrics = {
   lastUpdatedAt: 0
 };
 
-export interface PopupRequest {
-  type: 'csg:get-state';
-}
+export type PopupRequest =
+  | { type: 'csg:get-state' }
+  | { type: 'csg:benchmark-start'; loops: 5 | 10 }
+  | { type: 'csg:benchmark-stop' }
+  | { type: 'csg:benchmark-resume' }
+  | { type: 'csg:session-gc-start' };
 
 export interface PopupResponse {
-  metrics: DebugMetrics;
+  metrics?: DebugMetrics;
+  benchmark?: BenchmarkState | null;
+  ok?: boolean;
+  error?: string;
 }

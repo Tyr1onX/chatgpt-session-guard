@@ -35,4 +35,26 @@ describe('Session Switch Guard lifecycle', () => {
     vi.runAllTimers();
     expect(controller.getMetrics().conversationId).toBe('b');
   });
+  it('does not carry Network Guard measurements across conversation routes', () => {
+    const controller = new SessionController(DEFAULT_CONFIG);
+    controller.start();
+    vi.runAllTimers();
+
+    window.dispatchEvent(new CustomEvent(EVENTS.networkStatus, {
+      detail: JSON.stringify({ mode: 'paginated', modified: true, requestedTurns: 50, effectiveTurns: 8 })
+    }));
+    vi.runAllTimers();
+    expect(controller.getMetrics().networkMode).toBe('paginated');
+    expect(controller.getMetrics().networkRequestedTurns).toBe(50);
+
+    history.replaceState(null, '', '/c/b');
+    window.dispatchEvent(new Event(EVENTS.navigation));
+    vi.runAllTimers();
+
+    expect(controller.getMetrics().networkMode).toBe('unknown');
+    expect(controller.getMetrics().networkRequestedTurns).toBeNull();
+    expect(controller.getMetrics().networkEffectiveTurns).toBeNull();
+    controller.destroy();
+  });
+
 });
