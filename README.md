@@ -50,6 +50,16 @@ Ultra Lite · 1 round was also exercised in a real logged-in Chrome + ChatGPT se
 
 Confirmation / Permission and Branch Conversation were not reliably reproduced in the final manual smoke. They are therefore **not claimed as manually verified**, although automatic safety tests cover protected interaction and branch-preservation logic where applicable.
 
+## Languages
+
+The popup supports:
+
+- **简体中文**
+- **English**
+- **Auto detection** — the first preferred browser language is used; Chinese (`zh*`) opens in Simplified Chinese and other languages fall back to English.
+
+Language choice is stored separately from the core Session Guard configuration, so switching UI language does not change the selected mode, history window, Network Guard behavior, or other performance settings.
+
 ## History rendering
 
 History can be configured by visible **messages** or **rounds**:
