@@ -93,7 +93,13 @@ export function createHistorySingleFlightFetch(
 
   return async (...args: Parameters<typeof fetch>): Promise<Response> => {
     const config = resolveConfig();
-    if (!config || !config.enabled || config.temporaryFullHistory) return nativeFetch(...args);
+    if (!config || !config.enabled || config.temporaryFullHistory) {
+      // Do not let a previous enabled-mode in-flight/cooldown state leak across an explicit
+      // disable or Temporary Full History transition.
+      inFlight.clear();
+      rateLimitCooldowns.clear();
+      return nativeFetch(...args);
+    }
 
     const key = requestFingerprint(args);
     if (!key) return nativeFetch(...args);
