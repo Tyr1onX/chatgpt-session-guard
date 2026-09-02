@@ -1,7 +1,8 @@
 import type { GuardConfig } from './config';
 import type { NetworkMode } from './events';
 
-export type BenchmarkMode = 'control' | 'balanced' | 'aggressive';
+export type BenchmarkMode = 'control' | 'balanced' | 'ultra-lite' | 'aggressive';
+export type BenchmarkProfile = 'standard' | 'experimental';
 export type BenchmarkRunMode = BenchmarkMode | 'session-gc';
 export type BenchmarkStatus =
   | 'preparing'
@@ -23,7 +24,12 @@ export interface BenchmarkSample {
   switchCount: number;
   conversationId: string | null;
   renderedRounds: number;
+  renderedMessages: number;
+  configuredHistoryCount: number;
+  historyUnit: 'message' | 'round';
+  limitedByDomBudget: boolean;
   conversationDomNodes: number;
+  activeConversationDomNodes: number;
   documentDomNodes: number;
   cleanupCount: number;
   hardSwitchCount: number;
@@ -91,6 +97,7 @@ export interface BenchmarkEnvironment {
 export interface BenchmarkState {
   version: 1;
   sessionId: string;
+  profile: BenchmarkProfile;
   status: BenchmarkStatus;
   phase: 'primary' | 'session-gc';
   pauseReason: string | null;
@@ -115,7 +122,9 @@ export interface BenchmarkState {
 }
 
 export const BENCHMARK_SESSION_KEY = 'csg.benchmark.session.v1';
-export const BENCHMARK_MODES: BenchmarkMode[] = ['control', 'balanced', 'aggressive'];
+export const STANDARD_BENCHMARK_MODES: BenchmarkMode[] = ['control', 'balanced', 'ultra-lite'];
+export const EXPERIMENTAL_BENCHMARK_MODES: BenchmarkMode[] = ['aggressive'];
+export const BENCHMARK_MODES: BenchmarkMode[] = ['control', 'balanced', 'ultra-lite', 'aggressive'];
 
 export function emptyModeResult(mode: BenchmarkMode): BenchmarkModeResult {
   return {
@@ -276,77 +285,59 @@ export function preliminaryConclusion(
 ): { conclusion: BenchmarkConclusion; reason: string } {
   const control = results.control.analysis;
   const balanced = results.balanced.analysis;
-  const aggressive = results.aggressive.analysis;
-  if (!control || !balanced || !aggressive) {
-    return { conclusion: 'inconclusive', reason: 'One or more benchmark modes did not produce a complete analysis.' };
+  const ultraLite = results['ultra-lite'].analysis;
+  if (!control || !balanced || !ultraLite) {
+    return { conclusion: 'inconclusive', reason: 'Standard Validation requires complete Control, Balanced, and Ultra Lite analyses.' };
   }
-  if ([results.control, results.balanced, results.aggressive].some((result) => result.errors.length > 0)) {
-    return { conclusion: 'inconclusive', reason: 'At least one mode recorded navigation or stabilization errors.' };
+  if ([results.control, results.balanced, results['ultra-lite']].some((result) => result.errors.length > 0)) {
+    return { conclusion: 'inconclusive', reason: 'At least one Standard Validation mode recorded navigation or stabilization errors.' };
   }
 
-  const controlGrowth = dominantGrowth(control);
-  const balancedGrowth = dominantGrowth(balanced);
-  const aggressiveGrowth = dominantGrowth(aggressive);
-  const controlRank = growthRank(controlGrowth);
-  const balancedRank = growthRank(balancedGrowth);
-  const aggressiveRank = growthRank(aggressiveGrowth);
+  const controlRank = growthRank(dominantGrowth(control));
+  const balancedRank = growthRank(dominantGrowth(balanced));
+  const ultraRank = growthRank(dominantGrowth(ultraLite));
   const controlHeapRank = growthRank(control.heap.level);
-  const aggressiveHeapRank = growthRank(aggressive.heap.level);
-  const aggressiveDomStable = aggressive.conversationDom.level === 'stable' && aggressive.documentDom.level === 'stable';
-  const aggressiveLatencyRegression =
-    control.p95SwitchLatencyMs !== null && aggressive.p95SwitchLatencyMs !== null &&
-    aggressive.p95SwitchLatencyMs > control.p95SwitchLatencyMs * 1.8;
+  const ultraHeapRank = growthRank(ultraLite.heap.level);
+  const ultraDomStable = ultraLite.conversationDom.level === 'stable' && ultraLite.documentDom.level === 'stable';
+  const ultraLatencyRegression =
+    balanced.p95SwitchLatencyMs !== null && ultraLite.p95SwitchLatencyMs !== null &&
+    ultraLite.p95SwitchLatencyMs > balanced.p95SwitchLatencyMs * 1.5;
 
   if (controlRank <= 1) {
-    if (balancedRank > controlRank || aggressiveRank > controlRank) {
-      return { conclusion: 'regression', reason: 'Control stayed stable while at least one optimization mode showed more growth.' };
+    if (balancedRank > controlRank || ultraRank > controlRank) {
+      return { conclusion: 'regression', reason: 'Control stayed stable while an optimized mode showed more growth.' };
     }
-    return { conclusion: 'inconclusive', reason: 'The control run did not reproduce sustained growth strongly enough to prove the target problem.' };
+    return { conclusion: 'inconclusive', reason: 'Control did not reproduce sustained growth strongly enough to prove the target problem.' };
   }
 
-  if (aggressive.spaRetainedStateLikely) {
-    return {
-      conclusion: 'partial improvement',
-      reason: 'Aggressive stabilized the conversation DOM, but JS heap still showed strong growth. Rendering pressure improved, while retained SPA state/cache remains; Session GC testing is recommended.'
-    };
+  if (balancedRank > controlRank || ultraRank > controlRank || ultraLatencyRegression) {
+    return { conclusion: 'regression', reason: 'An optimized mode increased the growth class or Ultra Lite introduced a severe p95 latency regression versus Balanced.' };
   }
 
-  if (
-    controlHeapRank >= 2 &&
-    aggressiveHeapRank === 1 &&
-    aggressiveDomStable &&
-    !aggressiveLatencyRegression
-  ) {
+  if (control.heap.level === 'n/a') {
+    if (ultraDomStable && ultraRank < controlRank) {
+      return { conclusion: 'partial improvement', reason: 'Ultra Lite reduced DOM growth, but JS heap was unavailable so retained-memory improvement is not proven.' };
+    }
+    return { conclusion: 'inconclusive', reason: 'JS heap was unavailable and the remaining metrics do not prove retained-memory improvement.' };
+  }
+
+  if (controlHeapRank >= 2 && ultraHeapRank === 1 && ultraDomStable && !ultraLatencyRegression) {
+    const balancedHeapStable = balanced.heap.level === 'stable';
+    const ultraMedianNoWorse =
+      balanced.medianSwitchLatencyMs === null || ultraLite.medianSwitchLatencyMs === null ||
+      ultraLite.medianSwitchLatencyMs <= balanced.medianSwitchLatencyMs * 1.2;
     return {
       conclusion: 'proven improvement',
-      reason: 'Control reproduced sustained JS-heap growth while Aggressive reached stable heap and DOM working sets without a severe p95 switch-latency regression.'
+      reason: balancedHeapStable && ultraMedianNoWorse
+        ? 'Control reproduced heap growth while both Balanced and Ultra Lite stayed stable; Ultra Lite preserved stability without a material median-latency regression.'
+        : 'Control reproduced heap growth and Ultra Lite reached stable heap/DOM working sets without a severe p95 latency regression.'
     };
   }
 
-  if (control.heap.level === 'n/a' && aggressiveDomStable && growthRank(control.documentDom.level) >= 2) {
-    return {
-      conclusion: 'partial improvement',
-      reason: 'Aggressive stabilized DOM growth, but JS heap was unavailable, so retained-memory improvement cannot be proven from this run.'
-    };
+  if (ultraRank < controlRank || balancedRank < controlRank) {
+    return { conclusion: 'partial improvement', reason: 'At least one optimized mode reduced the observed growth class but did not fully prove a stable retained-memory working set.' };
   }
-
-  const balancedLatencyImproved =
-    control.medianSwitchLatencyMs !== null && balanced.medianSwitchLatencyMs !== null &&
-    balanced.medianSwitchLatencyMs < control.medianSwitchLatencyMs * 0.75;
-  if (balancedLatencyImproved && balanced.heap.level === control.heap.level && growthRank(control.heap.level) >= 2) {
-    return {
-      conclusion: 'partial improvement',
-      reason: 'Balanced materially improved median switch latency, but retained-memory growth remained in the same class as Control.'
-    };
-  }
-
-  if (Math.min(balancedRank || 9, aggressiveRank || 9) < controlRank) {
-    return { conclusion: 'partial improvement', reason: 'At least one optimization mode reduced the observed growth class, but did not fully reach a stable measured working set.' };
-  }
-  if (balancedRank > controlRank || aggressiveRank > controlRank || aggressiveLatencyRegression) {
-    return { conclusion: 'regression', reason: 'Optimization increased the growth class or introduced a severe switch-latency regression.' };
-  }
-  return { conclusion: 'inconclusive', reason: 'The optimized modes did not materially separate from the control run.' };
+  return { conclusion: 'inconclusive', reason: 'Balanced and Ultra Lite did not materially separate from Control in this run.' };
 }
 
 function formatNumber(value: number | null, digits = 1): string {
@@ -382,7 +373,7 @@ function modeSection(result: BenchmarkModeResult | SessionGcBenchmarkResult): st
 export function benchmarkReport(state: BenchmarkState): string {
   const conclusion = state.conclusion ?? 'inconclusive';
   const comparisonRows = [
-    ...BENCHMARK_MODES.map((mode) => {
+    ...state.modeOrder.map((mode) => {
       const analysis = state.results[mode].analysis;
       return `| ${mode} | ${analysis?.conversationDom.level ?? 'N/A'} | ${analysis?.documentDom.level ?? 'N/A'} | ${analysis?.heap.level ?? 'N/A'} | ${formatNumber(analysis?.medianSwitchLatencyMs ?? null)} | ${formatNumber(analysis?.p95SwitchLatencyMs ?? null)} |`;
     }),
@@ -390,25 +381,25 @@ export function benchmarkReport(state: BenchmarkState): string {
       `| session-gc | ${state.sessionGc.analysis?.conversationDom.level ?? 'N/A'} | ${state.sessionGc.analysis?.documentDom.level ?? 'N/A'} | ${state.sessionGc.analysis?.heap.level ?? 'N/A'} | ${formatNumber(state.sessionGc.analysis?.medianSwitchLatencyMs ?? null)} | ${formatNumber(state.sessionGc.analysis?.p95SwitchLatencyMs ?? null)} |`
     ] : [])
   ].join('\n');
+  const modeSections = state.modeOrder.map((mode) => modeSection(state.results[mode])).join('\n\n');
 
   return `# ChatGPT Session Guard — Real Browser Benchmark\n\n` +
     `## Environment\n\n` +
     `- Date: ${new Date(state.environment.startedAt).toISOString()}\n` +
     `- Chrome UA: ${state.environment.userAgent}\n` +
     `- Extension build: ${state.environment.buildId}\n` +
+    `- Benchmark profile: ${state.profile}\n` +
     `- Conversations: ${state.environment.conversationCount}\n` +
     `- Switches per mode: ${state.environment.switchesPerMode}\n` +
     `- Renderer process memory: N/A (optional external metric; not collected by the extension)\n\n` +
-    `${modeSection(state.results.control)}\n\n` +
-    `${modeSection(state.results.balanced)}\n\n` +
-    `${modeSection(state.results.aggressive)}\n\n` +
+    `${modeSections}\n\n` +
     `${state.sessionGc ? `${modeSection(state.sessionGc)}\n- Controlled hard reloads: ${state.sessionGc.hardReloadCount}\n\n` : ''}` +
     `## Comparison\n\n` +
     `| Mode | Conversation DOM growth | Document DOM growth | Heap growth | Median latency ms | p95 latency ms |\n` +
     `|---|---|---|---|---:|---:|\n${comparisonRows}\n\n` +
     `## Preliminary Conclusion\n\n` +
     `**${conclusion}**\n\n${state.conclusionReason ?? 'The benchmark did not produce enough evidence for a stronger conclusion.'}\n\n` +
-    `${state.results.aggressive.analysis?.spaRetainedStateLikely ? '**Session GC test recommended.** Aggressive kept conversation DOM stable while heap still showed strong growth.\n' : ''}` +
+    `${state.profile === 'experimental' && state.results.aggressive.analysis?.spaRetainedStateLikely ? '**Session GC test recommended.** Aggressive kept conversation DOM stable while heap still showed strong growth.\n' : ''}` +
     `\nThis report is generated from local performance counters only. It contains conversation IDs/routes for test coordination, but never conversation text.\n`;
 }
 

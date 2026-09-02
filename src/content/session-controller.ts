@@ -9,10 +9,15 @@ import { NavigationObserver } from './navigation-observer';
 const EMPTY_DOM: DomWindowStats = {
   totalRounds: 0,
   renderedRounds: 0,
+  totalMessages: 0,
+  renderedMessages: 0,
   conversationDomNodes: 0,
   activeConversationDomNodes: 0,
   hiddenRounds: 0,
-  prunedTurns: 0
+  prunedTurns: 0,
+  configuredHistoryCount: 0,
+  historyUnit: 'round',
+  limitedByDomBudget: false
 };
 
 export class SessionController {
@@ -116,7 +121,7 @@ export class SessionController {
   }
 
   private evaluate(): void {
-    const dom = this.domWindow.apply(this.config);
+    const dom = this.domWindow.apply(this.config, this.currentConversationId);
     const switchLatency = this.consumeSwitchLatency();
     if (switchLatency !== null) this.lastSwitchLatencyMs = switchLatency;
     this.metrics = buildMetrics({

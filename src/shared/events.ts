@@ -4,7 +4,9 @@ export const EVENTS = {
   navigation: 'csg:navigation',
   networkStatus: 'csg:network-status',
   debugMetrics: 'csg:debug-metrics',
-  debugCommand: 'csg:debug-command'
+  debugCommand: 'csg:debug-command',
+  loadPreviousHistory: 'csg:load-previous-history',
+  temporaryFullHistory: 'csg:temporary-full-history'
 } as const;
 
 export type NetworkMode = 'legacy' | 'paginated' | 'unknown' | 'disabled';

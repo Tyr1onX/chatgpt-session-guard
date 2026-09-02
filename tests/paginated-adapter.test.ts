@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { DEFAULT_CONFIG } from '../src/shared/config';
-import { rewritePaginatedRequest } from '../src/main-world/paginated-adapter';
+import { DEFAULT_CONFIG, applyModePreset, normalizeConfig } from '../src/shared/config';
+import {
+  rewritePaginatedRequest,
+  shouldSuppressOlderHistory,
+  suppressOlderHistoryPage
+} from '../src/main-world/paginated-adapter';
 import { classifyRequest } from '../src/main-world/request-classifier';
 
 describe('Aug 2026 paginated conversation adapter', () => {
@@ -27,11 +31,55 @@ describe('Aug 2026 paginated conversation adapter', () => {
     expect(rewritePaginatedRequest(classifyRequest(invalid), DEFAULT_CONFIG, [invalid]).modified).toBe(false);
   });
 
-  it('never rewrites cursor-based older-page requests', () => {
+  it('maps Ultra Lite and 1-message history to the conservative network floor', () => {
+    const url = `${location.origin}/backend-api/conversations/abc?num_turns=10`;
+    const ultra = applyModePreset(DEFAULT_CONFIG, 'ultra-lite');
+    expect(rewritePaginatedRequest(classifyRequest(url), ultra, [url]).effectiveTurns).toBe(4);
+
+    const oneMessage = normalizeConfig({ historyUnit: 'message', historyCount: 1 });
+    expect(rewritePaginatedRequest(classifyRequest(url), oneMessage, [url]).effectiveTurns).toBe(4);
+  });
+
+  it('uses temporary expansion only for the matching conversation', () => {
+    const config = normalizeConfig({
+      historyUnit: 'round',
+      historyCount: 1,
+      historyExpansion: 10,
+      historyExpansionConversationId: 'abc'
+    });
+    const abc = `${location.origin}/backend-api/conversations/abc?num_turns=10`;
+    const other = `${location.origin}/backend-api/conversations/other?num_turns=10`;
+    expect(rewritePaginatedRequest(classifyRequest(abc), config, [abc]).effectiveTurns).toBe(10);
+    expect(rewritePaginatedRequest(classifyRequest(other), config, [other]).effectiveTurns).toBe(4);
+  });
+
+  it('never rewrites cursor-based older-page requests at the URL layer', () => {
     const page = `${location.origin}/backend-api/conversations/abc/messages?before=cursor&include_has_versions=true&num_turns=100`;
     const result = rewritePaginatedRequest(classifyRequest(page), DEFAULT_CONFIG, [page]);
     expect(result.modified).toBe(false);
     expect(String(result.args[0])).toBe(page);
+  });
+
+  it('suppresses validated automatic older-page content when auto-load is off', () => {
+    const page = `${location.origin}/backend-api/conversations/abc/messages?before=cursor&num_turns=100`;
+    const classification = classifyRequest(page);
+    expect(shouldSuppressOlderHistory(classification, DEFAULT_CONFIG)).toBe(true);
+    const suppressed = suppressOlderHistoryPage({
+      messages: [{ id: 'old-message' }],
+      page_info: { has_previous_page: true, start_cursor: 'older' }
+    });
+    expect(suppressed.messages).toEqual([]);
+    expect(suppressed.page_info.has_previous_page).toBe(false);
+  });
+
+  it('allows older-page content during a matching manual expansion', () => {
+    const page = `${location.origin}/backend-api/conversations/abc/messages?before=cursor&num_turns=100`;
+    const config = normalizeConfig({
+      ...DEFAULT_CONFIG,
+      historyExpansion: 10,
+      historyExpansionConversationId: 'abc'
+    });
+    expect(shouldSuppressOlderHistory(classifyRequest(page), config)).toBe(false);
   });
 
   it('preserves Request headers and credentials when rewriting a Request object', () => {

@@ -1,5 +1,5 @@
 import { Window } from 'happy-dom';
-import { DEFAULT_CONFIG, type GuardMode } from '../src/shared/config';
+import { DEFAULT_CONFIG, applyModePreset, type GuardMode } from '../src/shared/config';
 import { DomRollingWindow } from '../src/content/dom-window';
 
 type GlobalWithGc = typeof globalThis & { gc?: () => void };
@@ -128,7 +128,8 @@ function runMode(mode: BenchmarkMode, profile: FixtureProfile): ModeResult {
   }
 
   const domWindow = new DomRollingWindow();
-  const stats = domWindow.apply({ ...DEFAULT_CONFIG, mode });
+  const config = mode === 'ultra-lite' ? applyModePreset(DEFAULT_CONFIG, 'ultra-lite') : { ...DEFAULT_CONFIG, mode };
+  const stats = domWindow.apply(config);
   const elapsed = performance.now() - started;
   forceGc();
   return {
@@ -202,6 +203,7 @@ if (scenario === 'single') {
       runMode('off', profile),
       runMode('safe', profile),
       runMode('balanced', profile),
+      runMode('ultra-lite', profile),
       runMode('aggressive', profile)
     ]
   }));

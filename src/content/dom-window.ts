@@ -1,5 +1,6 @@
-import type { GuardConfig } from '../shared/config';
-import { chooseDomWindow } from './dom-budget';
+import type { GuardConfig, HistoryUnit } from '../shared/config';
+import { historyTarget } from '../shared/config';
+import { EVENTS } from '../shared/events';
 
 const TURN_SELECTOR = [
   '[data-testid^="conversation-turn-"]',
@@ -18,19 +19,29 @@ export interface DomRound {
 export interface DomWindowStats {
   totalRounds: number;
   renderedRounds: number;
+  totalMessages: number;
+  renderedMessages: number;
   conversationDomNodes: number;
   activeConversationDomNodes: number;
   hiddenRounds: number;
   prunedTurns: number;
+  configuredHistoryCount: number;
+  historyUnit: HistoryUnit;
+  limitedByDomBudget: boolean;
 }
 
 type TurnRole = 'user' | 'assistant' | 'unknown';
+
+interface WindowDecision {
+  keepFromTurnIndex: number;
+  limitedByDomBudget: boolean;
+}
 
 function countNodes(element: Element): number {
   return 1 + element.querySelectorAll('*').length;
 }
 
-function turnRole(turn: HTMLElement): TurnRole {
+export function turnRole(turn: HTMLElement): TurnRole {
   const direct = turn.getAttribute('data-message-author-role');
   const nested = turn.querySelector<HTMLElement>('[data-message-author-role]')?.getAttribute('data-message-author-role');
   const role = direct ?? nested;
@@ -43,6 +54,10 @@ export function findTurnElements(root: ParentNode = document): HTMLElement[] {
     const ancestor = candidate.parentElement?.closest(TURN_SELECTOR);
     return ancestor === null || ancestor === undefined;
   });
+}
+
+export function visibleMessageTurns(turns: HTMLElement[]): HTMLElement[] {
+  return turns.filter((turn) => turnRole(turn) !== 'unknown');
 }
 
 export function buildDomRounds(turns: HTMLElement[]): DomRound[] {
@@ -82,7 +97,17 @@ function ensureStyles(): void {
       color: color-mix(in srgb, CanvasText 72%, transparent);
       font: 12px/1.4 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       text-align: center;
+    }
+    #${PLACEHOLDER_ID} .csg-history-title { margin-bottom: 7px; }
+    #${PLACEHOLDER_ID} .csg-history-actions { display:flex; justify-content:center; gap:6px; flex-wrap:wrap; }
+    #${PLACEHOLDER_ID} button {
+      border: 1px solid color-mix(in srgb, currentColor 18%, transparent);
+      border-radius: 7px;
+      padding: 5px 8px;
+      background: Canvas;
+      color: CanvasText;
       cursor: pointer;
+      font: inherit;
     }
   `;
   document.documentElement.appendChild(style);
@@ -107,101 +132,201 @@ function containsProtectedInteraction(turn: HTMLElement): boolean {
   return protectedElement ? isVisible(protectedElement) : false;
 }
 
+function pageHasActiveGeneration(): boolean {
+  const stop = document.querySelector<HTMLElement>('[data-testid="stop-button"], button[aria-label*="stop" i]');
+  return stop ? isVisible(stop) : false;
+}
+
 function resetTurnVisualState(turn: HTMLElement): void {
   turn.classList.remove('csg-safe-windowed', 'csg-balanced-hidden');
-  if (turn.dataset.csgPruned !== 'true') {
-    turn.classList.remove('csg-aggressive-pruned');
+  if (turn.dataset.csgPruned !== 'true') turn.classList.remove('csg-aggressive-pruned');
+}
+
+function turnIndexForRoundBoundary(turns: HTMLElement[], rounds: DomRound[], requestedRounds: number): number {
+  if (rounds.length === 0) return 0;
+  const keepRounds = Math.max(1, Math.min(rounds.length, requestedRounds));
+  const boundaryRound = rounds[Math.max(0, rounds.length - keepRounds)];
+  const firstTurn = boundaryRound?.turns[0];
+  return firstTurn ? Math.max(0, turns.indexOf(firstTurn)) : 0;
+}
+
+function turnIndexForMessageBoundary(turns: HTMLElement[], requestedMessages: number): number {
+  let visibleCount = 0;
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const turn = turns[index];
+    if (!turn) continue;
+    if (turnRole(turn) !== 'unknown') visibleCount += 1;
+    if (visibleCount >= Math.max(1, requestedMessages)) return index;
   }
+  return 0;
 }
 
-async function requestFullHistory(): Promise<void> {
-  const stored = await chrome.storage.local.get('csg.settings.v1');
-  const raw = stored['csg.settings.v1'];
-  const next = typeof raw === 'object' && raw !== null ? { ...raw, temporaryFullHistory: true } : { temporaryFullHistory: true };
-  await chrome.storage.local.set({ 'csg.settings.v1': next });
-  location.reload();
+function enforceDomBudget(
+  turns: HTMLElement[],
+  rounds: DomRound[],
+  initialBoundary: number,
+  config: GuardConfig
+): WindowDecision {
+  if (turns.length === 0) return { keepFromTurnIndex: 0, limitedByDomBudget: false };
+  const budget = Math.max(1, config.domBudget);
+  let boundary = Math.max(0, Math.min(initialBoundary, turns.length - 1));
+  const initial = boundary;
+
+  const activeCost = (): number => turns.slice(boundary).reduce((sum, turn) => sum + countNodes(turn), 0);
+  const activeUnits = (): number => config.historyUnit === 'message'
+    ? countRenderedMessages(turns, boundary)
+    : countRenderedRounds(rounds, turns, boundary);
+
+  while (activeCost() > budget && activeUnits() > 1) {
+    if (config.historyUnit === 'message') {
+      let next = boundary + 1;
+      while (next < turns.length && turnRole(turns[next] as HTMLElement) === 'unknown') next += 1;
+      if (next >= turns.length) break;
+      boundary = next;
+      continue;
+    }
+
+    const firstKept = turns[boundary];
+    const currentRoundIndex = firstKept ? rounds.findIndex((round) => round.turns.includes(firstKept)) : -1;
+    const nextRound = currentRoundIndex >= 0 ? rounds[currentRoundIndex + 1] : undefined;
+    const nextTurn = nextRound?.turns[0];
+    if (!nextTurn) break;
+    const nextBoundary = turns.indexOf(nextTurn);
+    if (nextBoundary <= boundary) break;
+    boundary = nextBoundary;
+  }
+
+  return { keepFromTurnIndex: boundary, limitedByDomBudget: boundary > initial };
 }
 
-function ensurePlaceholder(before: HTMLElement | null, hiddenRounds: number, mode: GuardConfig['mode']): void {
-  if (!before || hiddenRounds <= 0 || mode === 'safe') {
+function protectSafetyWindow(turns: HTMLElement[], rounds: DomRound[], boundary: number): number {
+  let protectedBoundary = boundary;
+
+  for (let index = 0; index < boundary; index += 1) {
+    const turn = turns[index];
+    if (turn && containsProtectedInteraction(turn)) {
+      protectedBoundary = Math.min(protectedBoundary, index);
+      break;
+    }
+  }
+
+  if (pageHasActiveGeneration() && rounds.length > 0) {
+    const latestRound = rounds.at(-1);
+    const first = latestRound?.turns[0];
+    if (first) protectedBoundary = Math.min(protectedBoundary, Math.max(0, turns.indexOf(first)));
+  }
+  return protectedBoundary;
+}
+
+function countRenderedMessages(turns: HTMLElement[], boundary: number): number {
+  return visibleMessageTurns(turns.slice(boundary)).length;
+}
+
+function countRenderedRounds(rounds: DomRound[], turns: HTMLElement[], boundary: number): number {
+  if (rounds.length === 0) return 0;
+  const firstKept = turns[boundary];
+  if (!firstKept) return 0;
+  const firstRound = rounds.findIndex((round) => round.turns.includes(firstKept));
+  return firstRound < 0 ? rounds.length : rounds.length - firstRound;
+}
+
+function ensurePlaceholder(before: HTMLElement | null, hiddenUnits: number, config: GuardConfig): void {
+  if (!before || hiddenUnits <= 0 || config.mode === 'safe') {
     document.getElementById(PLACEHOLDER_ID)?.remove();
     return;
   }
 
-  let placeholder = document.getElementById(PLACEHOLDER_ID) as HTMLButtonElement | null;
+  let placeholder = document.getElementById(PLACEHOLDER_ID) as HTMLDivElement | null;
   if (!placeholder) {
-    placeholder = document.createElement('button');
+    placeholder = document.createElement('div');
     placeholder.id = PLACEHOLDER_ID;
-    placeholder.type = 'button';
-    placeholder.addEventListener('click', () => { void requestFullHistory(); });
     before.parentNode?.insertBefore(placeholder, before);
   }
 
-  const label = mode === 'aggressive' ? 'unloaded from the page' : 'paused from rendering';
-  const text = `${hiddenRounds} earlier round${hiddenRounds === 1 ? '' : 's'} ${label} · View earlier history`;
-  if (placeholder.textContent !== text) placeholder.textContent = text;
+  placeholder.replaceChildren();
+  const title = document.createElement('div');
+  title.className = 'csg-history-title';
+  const unitLabel = config.historyUnit === 'message' ? 'message' : 'round';
+  title.textContent = config.autoLoadHistory
+    ? `${hiddenUnits} earlier ${unitLabel}${hiddenUnits === 1 ? '' : 's'} paused from rendering`
+    : 'Earlier history is not loaded automatically';
+
+  const actions = document.createElement('div');
+  actions.className = 'csg-history-actions';
+  if (!config.autoLoadHistory) {
+    const load = document.createElement('button');
+    load.type = 'button';
+    load.textContent = `Load previous ${config.historyBatchSize}`;
+    load.addEventListener('click', () => window.dispatchEvent(new Event(EVENTS.loadPreviousHistory)));
+    actions.appendChild(load);
+  }
+
+  const full = document.createElement('button');
+  full.type = 'button';
+  full.textContent = 'Temporary Full History';
+  full.addEventListener('click', () => window.dispatchEvent(new Event(EVENTS.temporaryFullHistory)));
+  actions.appendChild(full);
+  placeholder.append(title, actions);
 }
 
 export class DomRollingWindow {
   private prunedTurns = 0;
 
-  apply(config: GuardConfig): DomWindowStats {
+  apply(config: GuardConfig, conversationId: string | null = null): DomWindowStats {
     ensureStyles();
     const turns = findTurnElements();
     const rounds = buildDomRounds(turns);
+    const totalMessages = visibleMessageTurns(turns).length;
+    const requested = historyTarget(config, conversationId);
 
     if (!config.enabled || config.temporaryFullHistory) {
       for (const turn of turns) resetTurnVisualState(turn);
       document.getElementById(PLACEHOLDER_ID)?.remove();
-      return this.stats(rounds, rounds.length, 0);
+      return this.stats(config, turns, rounds, 0, false, requested);
     }
 
-    const decision = chooseDomWindow(rounds, config);
-    let keepFromIndex = decision.keepFromIndex;
+    const initialBoundary = config.historyUnit === 'message'
+      ? turnIndexForMessageBoundary(turns, requested)
+      : turnIndexForRoundBoundary(turns, rounds, requested);
+    const budgetDecision = enforceDomBudget(turns, rounds, initialBoundary, config);
+    const keepFromTurnIndex = protectSafetyWindow(turns, rounds, budgetDecision.keepFromTurnIndex);
 
-    for (let index = 0; index < keepFromIndex; index += 1) {
-      const round = rounds[index];
-      if (round?.turns.some(containsProtectedInteraction)) {
-        keepFromIndex = index;
-        break;
+    for (let index = 0; index < turns.length; index += 1) {
+      const turn = turns[index];
+      if (!turn) continue;
+      const keep = index >= keepFromTurnIndex;
+      if (keep) {
+        resetTurnVisualState(turn);
+        continue;
       }
-    }
 
-    for (let index = 0; index < rounds.length; index += 1) {
-      const round = rounds[index];
-      if (!round) continue;
-      const keep = index >= keepFromIndex;
-
-      for (const turn of round.turns) {
-        if (keep) {
-          resetTurnVisualState(turn);
-          continue;
-        }
-
-        if (config.mode === 'safe') {
-          turn.classList.add('csg-safe-windowed');
-          turn.classList.remove('csg-balanced-hidden');
-          continue;
-        }
-
-        if (config.mode === 'balanced') {
-          turn.classList.add('csg-balanced-hidden');
-          turn.classList.remove('csg-safe-windowed');
-          continue;
-        }
-
-        if (turn.dataset.csgPruned !== 'true' && !containsProtectedInteraction(turn)) {
-          turn.replaceChildren();
-          turn.dataset.csgPruned = 'true';
-          this.prunedTurns += 1;
-        }
-        turn.classList.add('csg-aggressive-pruned');
+      if (config.mode === 'safe') {
+        turn.classList.add('csg-safe-windowed');
+        turn.classList.remove('csg-balanced-hidden');
+        continue;
       }
+
+      if (config.mode === 'balanced' || config.mode === 'ultra-lite') {
+        turn.classList.add('csg-balanced-hidden');
+        turn.classList.remove('csg-safe-windowed');
+        continue;
+      }
+
+      if (turn.dataset.csgPruned !== 'true' && !containsProtectedInteraction(turn)) {
+        turn.replaceChildren();
+        turn.dataset.csgPruned = 'true';
+        this.prunedTurns += 1;
+      }
+      turn.classList.add('csg-aggressive-pruned');
     }
 
-    const firstKeptTurn = rounds[keepFromIndex]?.turns[0] ?? null;
-    ensurePlaceholder(firstKeptTurn, keepFromIndex, config.mode);
-    return this.stats(rounds, rounds.length - keepFromIndex, keepFromIndex);
+    const renderedMessages = countRenderedMessages(turns, keepFromTurnIndex);
+    const renderedRounds = countRenderedRounds(rounds, turns, keepFromTurnIndex);
+    const hiddenUnits = config.historyUnit === 'message'
+      ? Math.max(0, totalMessages - renderedMessages)
+      : Math.max(0, rounds.length - renderedRounds);
+    ensurePlaceholder(turns[keepFromTurnIndex] ?? null, hiddenUnits, config);
+    return this.stats(config, turns, rounds, keepFromTurnIndex, budgetDecision.limitedByDomBudget, requested);
   }
 
   cleanup(): void {
@@ -209,18 +334,30 @@ export class DomRollingWindow {
     for (const turn of findTurnElements()) resetTurnVisualState(turn);
   }
 
-  private stats(rounds: DomRound[], renderedRounds: number, hiddenRounds: number): DomWindowStats {
-    const measuredCost = (round: DomRound): number => round.turns.reduce((sum, turn) => sum + countNodes(turn), 0);
-    const conversationDomNodes = rounds.reduce((sum, round) => sum + measuredCost(round), 0);
-    const activeStart = Math.max(0, rounds.length - renderedRounds);
-    const activeConversationDomNodes = rounds.slice(activeStart).reduce((sum, round) => sum + measuredCost(round), 0);
+  private stats(
+    config: GuardConfig,
+    turns: HTMLElement[],
+    rounds: DomRound[],
+    boundary: number,
+    limitedByDomBudget: boolean,
+    configuredHistoryCount: number
+  ): DomWindowStats {
+    const conversationDomNodes = turns.reduce((sum, turn) => sum + countNodes(turn), 0);
+    const activeConversationDomNodes = turns.slice(boundary).reduce((sum, turn) => sum + countNodes(turn), 0);
+    const renderedMessages = countRenderedMessages(turns, boundary);
+    const renderedRounds = countRenderedRounds(rounds, turns, boundary);
     return {
       totalRounds: rounds.length,
       renderedRounds,
+      totalMessages: visibleMessageTurns(turns).length,
+      renderedMessages,
       conversationDomNodes,
       activeConversationDomNodes,
-      hiddenRounds,
-      prunedTurns: this.prunedTurns
+      hiddenRounds: Math.max(0, rounds.length - renderedRounds),
+      prunedTurns: this.prunedTurns,
+      configuredHistoryCount,
+      historyUnit: config.historyUnit,
+      limitedByDomBudget
     };
   }
 }

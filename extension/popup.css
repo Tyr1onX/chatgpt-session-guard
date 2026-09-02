@@ -31,3 +31,11 @@ dd { margin: 0; font-variant-numeric: tabular-nums; }
 .benchmark-actions button { flex: 1; }
 
 .benchmark-gc { width: 100%; margin-top: 8px; }
+
+.compact-section { margin: 12px 0; padding-top: 10px; border-top: 1px solid color-mix(in srgb, CanvasText 10%, transparent); }
+.compact-section h2 { margin: 0 0 8px; font-size: 12px; }
+.custom-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:8px 0; }
+.full-width { width:100%; margin-top:6px; }
+.actions.single { grid-template-columns:1fr; }
+
+.stress-heading { margin-top: 14px; padding-top: 10px; border-top: 1px solid color-mix(in srgb, CanvasText 10%, transparent); }

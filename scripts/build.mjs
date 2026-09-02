@@ -32,15 +32,12 @@ const common = {
   }
 };
 
-const builds = [
+await Promise.all([
   build({ ...common, entryPoints: ['src/main-world/fetch-guard.ts'], outfile: 'dist/main-world.js', format: 'iife' }),
   build({ ...common, entryPoints: ['src/content/index.ts'], outfile: 'dist/content.js', format: 'iife' }),
-  build({ ...common, entryPoints: ['src/popup/popup.ts'], outfile: 'dist/popup.js', format: 'iife' })
-];
-if (debugBuild) {
-  builds.push(build({ ...common, entryPoints: ['src/background/index.ts'], outfile: 'dist/background.js', format: 'iife' }));
-}
-await Promise.all(builds);
+  build({ ...common, entryPoints: ['src/popup/popup.ts'], outfile: 'dist/popup.js', format: 'iife' }),
+  build({ ...common, entryPoints: ['src/background/index.ts'], outfile: 'dist/background.js', format: 'iife' })
+]);
 
 for (const file of ['manifest.json', 'popup.html', 'popup.css']) {
   await cp(path.join(root, 'extension', file), path.join(dist, file));
@@ -55,10 +52,6 @@ if (!debugBuild) {
     'utf8'
   );
 
-  const manifestPath = path.join(dist, 'manifest.json');
-  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-  delete manifest.background;
-  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
 }
 
 console.log(`Built ChatGPT Session Guard (${debugBuild ? 'debug' : 'production'}, ${buildId}) into dist/`);

@@ -1,15 +1,17 @@
 import {
-  BENCHMARK_MODES,
+  EXPERIMENTAL_BENCHMARK_MODES,
+  STANDARD_BENCHMARK_MODES,
   analyzeMode,
   benchmarkTargets,
   emptyModeResult,
   emptySessionGcResult,
   preliminaryConclusion,
   type BenchmarkMode,
+  type BenchmarkProfile,
   type BenchmarkSample,
   type BenchmarkState
 } from '../shared/benchmark';
-import type { GuardConfig } from '../shared/config';
+import { applyModePreset, type GuardConfig } from '../shared/config';
 import { EVENTS } from '../shared/events';
 import type { DebugMetrics } from '../shared/types';
 import { hasUnsafeInteractiveState } from './hard-switch';
@@ -120,15 +122,23 @@ function benchmarkConfig(mode: BenchmarkMode, original: GuardConfig): GuardConfi
       enabled: false,
       temporaryFullHistory: false,
       hardSwitchEnabled: false,
+      historyExpansion: 0,
+      historyExpansionConversationId: null,
       debug: true
     };
   }
+  const preset = mode === 'ultra-lite'
+    ? applyModePreset(original, 'ultra-lite')
+    : mode === 'balanced'
+      ? { ...original, mode: 'balanced' as const, historyUnit: 'round' as const, historyCount: 8, historyBatchSize: 10, autoLoadHistory: false }
+      : { ...original, mode };
   return {
-    ...original,
+    ...preset,
     enabled: true,
-    mode,
     temporaryFullHistory: false,
     hardSwitchEnabled: false,
+    historyExpansion: 0,
+    historyExpansionConversationId: null,
     debug: true
   };
 }
@@ -192,7 +202,7 @@ export class AutomaticBenchmarkRunner {
     return this.state ? structuredClone(this.state) : null;
   }
 
-  async start(loops: 5 | 10): Promise<BenchmarkStartResult> {
+  async start(loops: 5 | 10, profile: BenchmarkProfile = 'standard'): Promise<BenchmarkStartResult> {
     if (this.state && isActiveStatus(this.state.status)) {
       return { ok: false, error: 'A benchmark is already running.' };
     }
@@ -210,6 +220,7 @@ export class AutomaticBenchmarkRunner {
     this.state = {
       version: 1,
       sessionId: `${startedAt}-${Math.random().toString(36).slice(2, 10)}`,
+      profile,
       status: 'preparing',
       phase: 'primary',
       pauseReason: null,
@@ -218,7 +229,7 @@ export class AutomaticBenchmarkRunner {
       loops,
       switchesPerMode: loops * 10,
       conversationIds,
-      modeOrder: [...BENCHMARK_MODES],
+      modeOrder: [...(profile === 'experimental' ? EXPERIMENTAL_BENCHMARK_MODES : STANDARD_BENCHMARK_MODES)],
       modeIndex: 0,
       currentSwitch: 0,
       expectedConversationId: null,
@@ -236,6 +247,7 @@ export class AutomaticBenchmarkRunner {
       results: {
         control: emptyModeResult('control'),
         balanced: emptyModeResult('balanced'),
+        'ultra-lite': emptyModeResult('ultra-lite'),
         aggressive: emptyModeResult('aggressive')
       },
       sessionGc: null,
@@ -250,8 +262,8 @@ export class AutomaticBenchmarkRunner {
   }
 
   async startSessionGc(): Promise<BenchmarkStartResult> {
-    if (!this.state || this.state.status !== 'complete') {
-      return { ok: false, error: 'Complete the Control/Balanced/Aggressive benchmark first.' };
+    if (!this.state || this.state.status !== 'complete' || this.state.profile !== 'experimental') {
+      return { ok: false, error: 'Complete the Experimental Aggressive benchmark first.' };
     }
     if (this.state.results.aggressive.analysis?.spaRetainedStateLikely !== true) {
       return { ok: false, error: 'Session GC benchmark is only recommended when Aggressive keeps DOM stable while heap still shows strong growth.' };
@@ -790,7 +802,12 @@ export class AutomaticBenchmarkRunner {
         switchCount,
         conversationId: metrics.conversationId,
         renderedRounds: metrics.renderedRounds,
+        renderedMessages: metrics.renderedMessages,
+        configuredHistoryCount: metrics.configuredHistoryCount,
+        historyUnit: metrics.historyUnit,
+        limitedByDomBudget: metrics.limitedByDomBudget,
         conversationDomNodes: metrics.conversationDomNodes,
+        activeConversationDomNodes: metrics.activeConversationDomNodes,
         documentDomNodes: metrics.totalDocumentDomNodes,
         cleanupCount: metrics.cleanupCount,
         hardSwitchCount: result.hardReloadCount,
@@ -815,7 +832,12 @@ export class AutomaticBenchmarkRunner {
       switchCount,
       conversationId: metrics.conversationId,
       renderedRounds: metrics.renderedRounds,
+      renderedMessages: metrics.renderedMessages,
+      configuredHistoryCount: metrics.configuredHistoryCount,
+      historyUnit: metrics.historyUnit,
+      limitedByDomBudget: metrics.limitedByDomBudget,
       conversationDomNodes: metrics.conversationDomNodes,
+      activeConversationDomNodes: metrics.activeConversationDomNodes,
       documentDomNodes: metrics.totalDocumentDomNodes,
       cleanupCount: metrics.cleanupCount,
       hardSwitchCount: metrics.hardSwitchCount,
@@ -849,9 +871,16 @@ export class AutomaticBenchmarkRunner {
       return;
     }
 
-    const conclusion = preliminaryConclusion(state.results);
-    state.conclusion = conclusion.conclusion;
-    state.conclusionReason = conclusion.reason;
+    if (state.profile === 'standard') {
+      const conclusion = preliminaryConclusion(state.results);
+      state.conclusion = conclusion.conclusion;
+      state.conclusionReason = conclusion.reason;
+    } else {
+      state.conclusion = 'inconclusive';
+      state.conclusionReason = state.results.aggressive.analysis?.spaRetainedStateLikely
+        ? 'Experimental Aggressive shows stable conversation DOM with strong heap growth; Session GC testing is recommended.'
+        : 'Experimental Aggressive is diagnostic-only and does not establish a production recommendation without a Standard control comparison.';
+    }
     state.status = 'complete';
     state.pauseReason = null;
     state.completedAt = Date.now();
@@ -881,9 +910,16 @@ export class AutomaticBenchmarkRunner {
       await this.prepareCurrentMode();
       return;
     }
-    const conclusion = preliminaryConclusion(state.results);
-    state.conclusion = conclusion.conclusion;
-    state.conclusionReason = conclusion.reason;
+    if (state.profile === 'standard') {
+      const conclusion = preliminaryConclusion(state.results);
+      state.conclusion = conclusion.conclusion;
+      state.conclusionReason = conclusion.reason;
+    } else {
+      state.conclusion = 'inconclusive';
+      state.conclusionReason = state.results.aggressive.analysis?.spaRetainedStateLikely
+        ? 'Experimental Aggressive shows stable conversation DOM with strong heap growth; Session GC testing is recommended.'
+        : 'Experimental Aggressive is diagnostic-only and does not establish a production recommendation without a Standard control comparison.';
+    }
     state.status = 'complete';
     state.completedAt = Date.now();
     await this.setConfig(state.originalConfig);

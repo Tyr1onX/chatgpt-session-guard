@@ -20,23 +20,59 @@
       <select id="mode">
         <option value="safe">Safe</option>
         <option value="balanced">Balanced</option>
-        <option value="aggressive">Aggressive · experimental</option>
+        <option value="ultra-lite">Ultra Lite</option>
+        <option value="aggressive">Aggressive · Experimental</option>
       </select>
     </label>
 
-    <label>Recent rounds
-      <input id="recentRounds" type="number" min="4" max="20" step="1">
-    </label>
+    <section class="compact-section">
+      <h2>History</h2>
+      <label>Visible
+        <select id="historyPreset">
+          <option value="message:1">1 message</option>
+          <option value="round:1">1 round</option>
+          <option value="round:2">2 rounds</option>
+          <option value="round:4">4 rounds</option>
+          <option value="round:8">8 rounds</option>
+          <option value="round:16">16 rounds</option>
+          <option value="custom">Custom</option>
+        </select>
+      </label>
+      <div id="historyCustom" class="custom-grid" hidden>
+        <select id="historyUnit" aria-label="History unit">
+          <option value="message">Messages</option>
+          <option value="round">Rounds</option>
+        </select>
+        <input id="historyCount" type="number" min="1" max="50" step="1" aria-label="Visible history count">
+      </div>
+      <label>Older history
+        <select id="autoLoadHistory">
+          <option value="false">Manual only</option>
+          <option value="true">Automatic</option>
+        </select>
+      </label>
+      <label>Load batch
+        <select id="historyBatchSize">
+          <option value="5">5</option>
+          <option value="10">10</option>
+          <option value="20">20</option>
+          <option value="50">50</option>
+        </select>
+      </label>
+      <button id="loadPreviousHistory" type="button" class="secondary full-width">Load previous history</button>
+      <p id="historyStatus" class="benchmark-message"></p>
+    </section>
 
-    <div class="row"><span>DOM budget</span><strong>Auto · 7k</strong></div>
+    <div class="row"><span>DOM budget</span><strong id="domBudgetState">Auto · 7k</strong></div>
     <div class="row"><span>Session</span><strong id="sessionState">Checking…</strong></div>
+    <div class="row"><span>Active history</span><strong id="activeHistory">—</strong></div>
 
     <div class="actions">
       <button id="toggleEnabled" type="button">Disable</button>
       <button id="fullHistory" type="button" class="secondary">Temporary Full History</button>
     </div>
 
-    <p id="warning" class="warning" hidden>Aggressive mode removes settled old turn subtrees until ChatGPT is reloaded.</p>
+    <p id="warning" class="warning" hidden>Aggressive removes settled old turn subtrees and is experimental. Ultra Lite uses the Balanced engine instead.</p>
 
     <!-- CSG_DEBUG_START -->
     <section id="benchmarkSection" class="benchmark">
@@ -44,19 +80,25 @@
         <h2>Benchmark</h2>
         <span class="debug-badge">Debug</span>
       </div>
+      <label>Profile
+        <select id="benchmarkProfile">
+          <option value="standard">Standard · Control / Balanced / Ultra Lite</option>
+          <option value="experimental">Experimental · Aggressive</option>
+        </select>
+      </label>
       <div class="row"><span>Conversations</span><strong id="benchmarkConversations">—</strong></div>
       <div class="row"><span>Mode</span><strong id="benchmarkMode">Idle</strong></div>
-      <div class="row"><span>Progress</span><strong id="benchmarkProgress">0 / 50</strong></div>
+      <div class="row"><span>Progress</span><strong id="benchmarkProgress">0 / 100</strong></div>
       <div class="row"><span>DOM</span><strong id="benchmarkDom">—</strong></div>
       <div class="row"><span>Heap</span><strong id="benchmarkHeap">—</strong></div>
       <div class="row"><span>Latency</span><strong id="benchmarkLatency">—</strong></div>
       <label>Run length
         <select id="benchmarkLoops">
-          <option value="5">50 switches / mode</option>
           <option value="10">100 switches / mode</option>
+          <option value="5">50 switches / mode</option>
         </select>
       </label>
-      <p id="benchmarkMessage" class="benchmark-message">Control → Balanced → Aggressive. Hard Switch stays off.</p>
+      <p id="benchmarkMessage" class="benchmark-message">Standard Validation compares Control, Balanced and Ultra Lite. Hard Switch stays off.</p>
       <div class="benchmark-actions">
         <button id="benchmarkStart" type="button">Start Benchmark</button>
         <button id="benchmarkResume" type="button" class="secondary" hidden>Resume Benchmark</button>
@@ -67,6 +109,16 @@
         <button id="benchmarkReport" type="button" class="secondary">Download Report</button>
       </div>
       <button id="benchmarkSessionGc" type="button" class="secondary benchmark-gc" hidden>Run Session GC Benchmark</button>
+      <div class="benchmark-heading stress-heading"><h2>Long Conversation Stress</h2></div>
+      <p id="longStressMessage" class="benchmark-message">Tests this current long conversation at 8r / 4r / 2r / 1r / 1 message.</p>
+      <div class="benchmark-actions">
+        <button id="longStressStart" type="button" class="secondary">Run Long Stress</button>
+        <button id="longStressStop" type="button" class="secondary" hidden>Stop</button>
+      </div>
+      <div id="longStressDownloads" class="benchmark-actions" hidden>
+        <button id="longStressJson" type="button" class="secondary">Stress JSON</button>
+        <button id="longStressReport" type="button" class="secondary">Stress Report</button>
+      </div>
     </section>
     <!-- CSG_DEBUG_END -->
 

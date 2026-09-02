@@ -1,8 +1,8 @@
-import { normalizeConfig, type GuardConfig } from '../shared/config';
+import { historyTarget, normalizeConfig, type GuardConfig } from '../shared/config';
 import { EVENTS, dispatchStringEvent, parseStringEvent, type NetworkStatus } from '../shared/events';
 import { installDebugHelper } from './debug-helper';
 import { trimLegacyConversation } from './legacy-adapter';
-import { adaptPaginatedConversation, rewritePaginatedRequest } from './paginated-adapter';
+import { adaptPaginatedConversation, rewritePaginatedRequest, shouldSuppressOlderHistory, suppressOlderHistoryPage } from './paginated-adapter';
 import { classifyRequest } from './request-classifier';
 import { detectConversationSchema } from './schema-validator';
 
@@ -141,13 +141,14 @@ function patchFetch(): void {
       }
 
       adaptPaginatedConversation(schema.data);
+      const suppressOlder = shouldSuppressOlderHistory(classification, config);
       emitNetworkStatus({
         mode: 'paginated',
-        modified: rewrite.modified,
+        modified: rewrite.modified || suppressOlder,
         ...(rewrite.requestedTurns === null ? {} : { requestedTurns: rewrite.requestedTurns }),
         ...(rewrite.effectiveTurns === null ? {} : { effectiveTurns: rewrite.effectiveTurns })
       });
-      return response;
+      return suppressOlder ? modifiedResponse(response, suppressOlderHistoryPage(schema.data)) : response;
     }
 
     const response = await nativeFetch(...args);
@@ -157,7 +158,7 @@ function patchFetch(): void {
       return response;
     }
 
-    const result = trimLegacyConversation(schema.data, config.recentRounds);
+    const result = trimLegacyConversation(schema.data, historyTarget(config));
     if (!result) {
       emitNetworkStatus({ mode: 'unknown', modified: false });
       return response;

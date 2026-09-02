@@ -1,4 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest';
+import {
+  EXPERIMENTAL_BENCHMARK_MODES,
+  STANDARD_BENCHMARK_MODES
+} from '../src/shared/benchmark';
+import { LONG_STRESS_SETTINGS } from '../src/shared/long-stress';
 import { collectSidebarConversationIds } from '../src/content/benchmark-runner';
 
 describe('benchmark sidebar discovery', () => {
@@ -35,5 +40,20 @@ describe('benchmark sidebar discovery', () => {
   it('returns fewer than five when the visible sidebar does not expose enough conversations', () => {
     document.body.innerHTML = '<nav><a href="/c/a-long-enough-id">A</a><a href="/c/b-long-enough-id">B</a></nav>';
     expect(collectSidebarConversationIds(document, 5)).toHaveLength(2);
+  });
+
+  it('keeps Aggressive out of Standard Validation', () => {
+    expect(STANDARD_BENCHMARK_MODES).toEqual(['control', 'balanced', 'ultra-lite']);
+    expect(EXPERIMENTAL_BENCHMARK_MODES).toEqual(['aggressive']);
+  });
+
+  it('defines the long-conversation stress sequence from 8 rounds down to 1 message', () => {
+    expect(LONG_STRESS_SETTINGS.map((setting) => setting.label)).toEqual([
+      '8 rounds',
+      '4 rounds',
+      '2 rounds',
+      '1 round',
+      '1 message'
+    ]);
   });
 });

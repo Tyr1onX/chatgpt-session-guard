@@ -1,34 +1,163 @@
 # ChatGPT Session Guard
 
-ChatGPT Session Guard is a Chrome Manifest V3 extension for people who keep ChatGPT Web open for long periods and repeatedly switch between multiple long-running conversations.
+**ChatGPT Session Guard is designed for people who use ChatGPT as a working state rather than a chat-history reader.**
 
-Its only goal is to reduce browser-side rendering and session-state pressure. It does **not** delete server-side conversation history, modify prompts sent to the model, abort generation, or store chat text.
+It reduces the browser-side history working set for people who leave ChatGPT Web open all day and repeatedly move among long-running conversations. The full conversation remains on ChatGPT's servers. Session Guard changes only what the browser requests/renders locally.
 
-## What it does
+> Showing less history is not deleting history.
 
-The extension uses four deliberately separate layers:
+## Current evidence
 
-1. **Network Guard** — limits initial history loading only for recognized conversation GET requests. Unknown schemas fail open.
-2. **Rolling DOM Window** — keeps the newest conversation UI active while older settled turns use Safe, Balanced, or Aggressive handling.
-3. **Session Switch Guard** — tears down per-conversation observers/timers/references on SPA navigation.
-4. **Experimental Session GC** — reserved for cases where DOM is stable but the ChatGPT SPA still retains heap/state across many switches.
+The first real logged-in Chrome benchmark established an important baseline:
 
-ChatGPT is a private web application that changes frequently. Internal endpoints and DOM structure may change, so compatibility is maintained on a best-effort basis rather than guaranteed permanently.
+| Mode | 50-switch JS Heap | Result |
+|---|---:|---|
+| Control | 186.8 → 437.1 MB (+134%) | strong growth |
+| Balanced | 331.7 → 315.3 MB | stable |
+| Aggressive | 400.3 → 805.5 MB (+101%) | regression |
 
-## Privacy
+Therefore **Balanced remains the default**. Aggressive remains Experimental and is not part of the normal recommendation path.
 
-ChatGPT Session Guard is local-only.
+The same real run confirmed the current paginated ChatGPT request uses `num_turns=10`, and the previous Balanced configuration reduced it to `8`.
 
-- No analytics or telemetry.
-- No remote server.
-- No external API.
-- No conversation text is stored or exported.
-- No conversation content is sent through the MAIN ↔ ISOLATED bridge.
-- Automatic benchmarks store only conversation IDs/routes and numeric performance counters in `chrome.storage.session`.
+**Ultra Lite has not yet been proven by a new real logged-in benchmark.** The debug benchmark now exists specifically to compare it against the known Balanced baseline.
+
+## History rendering
+
+History can be configured by visible **messages** or **rounds**:
+
+- 1 message
+- 1 round
+- 2 rounds
+- 4 rounds
+- 8 rounds
+- 16 rounds
+- Custom: 1–50 messages or rounds
+
+A **message** is a visible top-level user or assistant message bubble. Tool/thinking/internal descendants are not counted as separate user-visible messages.
+
+A **round** begins with a user turn and includes its following assistant response set. Tool/thinking/internal nodes do not create artificial rounds.
+
+The configured count is a presentation target, not a promise that the entire page contains only that many DOM nodes. The safety window can temporarily retain extra active nodes for streaming, tool UI, confirmation dialogs, focused controls, or other live interactions. The DOM budget may also reduce an expensive configured window.
+
+## Ultra Lite
+
+Ultra Lite is not a new deletion algorithm. It is the existing Balanced engine with a much smaller browser history working set.
+
+Default Ultra Lite preset:
+
+```text
+Visible history:       1 round
+Older history:         Manual only
+History batch:         10
+Network Guard:         ON
+DOM engine:            Balanced
+Aggressive removal:    OFF
+Hard Switch:           OFF
+DOM budget:            7000 (unchanged until real data justifies lowering it)
+```
+
+**Ultra Lite can keep only the latest message or latest round visible while the full conversation remains on ChatGPT's servers.** Select Ultra Lite, then change Visible history to `1 message` if that is the desired working style.
+
+## Network Guard
+
+For the current paginated endpoint:
+
+```text
+GET /backend-api/conversations/{conversationId}?num_turns=N
+```
+
+Session Guard lowers an already-present valid `num_turns`; it never increases ChatGPT's request and never modifies POST/stream/tool/upload/confirmation traffic.
+
+Because low `num_turns` semantics are not publicly documented for Tool/Thinking/Branch conversations, v0.1 currently uses:
+
+```text
+MIN_SAFE_NETWORK_TURNS = 4
+```
+
+Examples when ChatGPT requests 10:
+
+```text
+Balanced 8 rounds  → 10 → 8
+Ultra Lite 1 round → 10 → 4
+1 visible message  → 10 → 4
+```
+
+`num_turns=1/2/4` have **not** all been validated in a real logged-in compatibility matrix. The floor of 4 is deliberately conservative until that validation exists.
+
+When **Older history = Manual only**, validated cursor-page responses are prevented from automatically feeding old message payloads back into the browser working set. Unknown response schemas fail open unchanged.
+
+## Older history
+
+By default, older history is Manual only.
+
+The lightweight boundary offers:
+
+```text
+Load previous 10
+Temporary Full History
+```
+
+`Load previous N` temporarily expands only the current conversation. The expansion is stored in `chrome.storage.session`, not as the user's permanent default, and a safe reload lets ChatGPT reconstruct the conversation itself. Switching conversations clears that temporary expansion.
+
+ChatGPT controls the raw pagination shape, so the batch is a browser history target rather than a guarantee that an internal API page contains exactly N raw nodes. Tool/thinking dependencies are never sliced from an unknown raw page shape.
+
+**Temporary Full History** temporarily disables both Network Guard history limiting and DOM history limiting, then reloads the current conversation. **Restore Lightweight Mode** clears temporary expansion, restores the saved configuration, and reloads again. If ChatGPT is streaming or a protected interaction is active, Session Guard refuses to reload.
+
+## Modes
+
+- **Safe** — keeps old DOM attached with `content-visibility`.
+- **Balanced** — current recommended default; hides old settled turn roots without deleting descendants.
+- **Ultra Lite** — Balanced engine + very small history target + manual older history.
+- **Aggressive · Experimental** — removes old settled descendants. Real benchmark currently shows a regression, so it is not recommended as default.
+
+Hard Switch / Session GC remains off by default.
+
+## Automatic real-browser validation
+
+The debug build now has benchmark profiles:
+
+### Standard Validation
+
+```text
+Control → Balanced → Ultra Lite
+```
+
+Default: **100 switches per mode**. It records DOM working set, JS heap when available, median/p95 switch latency, Long Tasks, cleanup count, Network Guard turn limits, and history-window metrics.
+
+### Experimental
+
+```text
+Aggressive
+```
+
+Aggressive and Session GC are kept out of Standard Validation so they do not contaminate the normal comparison.
+
+### Long Conversation Stress
+
+Run this on one existing long conversation. It automatically reloads and samples:
+
+```text
+8 rounds → 4 rounds → 2 rounds → 1 round → 1 message
+```
+
+It records visible messages/rounds, active/conversation/document DOM, JS heap, Long Tasks, a lightweight scroll-work proxy, input-latency proxy, DOM-budget limiting, and Network Guard turns. It does not create new messages or read/store chat text.
+
+See [`docs/automatic-real-browser-benchmark.md`](docs/automatic-real-browser-benchmark.md).
+
+## Privacy and permissions
+
+ChatGPT Session Guard is local-only:
+
+- no analytics or telemetry
+- no remote server
+- no external API
+- no conversation text stored/exported
+- benchmark/session state contains IDs/routes and numeric counters only
 
 > ChatGPT Session Guard never sends or stores conversation content.
 
-## Permissions
+Permissions remain intentionally small:
 
 ```text
 permissions:
@@ -38,35 +167,17 @@ host_permissions:
   https://chatgpt.com/*
 ```
 
-The extension does not request `history`, `cookies`, `downloads`, `webRequest`, `clipboard`, `tabs`, or `activeTab`.
+The background service worker exists only to hold temporary `chrome.storage.session` state such as manual history expansion and debug benchmark progress. The extension does not request `history`, `cookies`, `downloads`, `webRequest`, `clipboard`, `tabs`, or `activeTab`.
 
-## Development
-
-Requirements:
-
-- Node.js 24+
-- Chrome / Chromium with Manifest V3 support
-
-Install dependencies:
+## Build
 
 ```text
 npm install
-```
-
-Run checks:
-
-```text
 npm test
 npm run lint
 npm run typecheck
 npm run build
 npm audit
-```
-
-Production build:
-
-```text
-npm run build
 ```
 
 Debug build:
@@ -75,53 +186,10 @@ Debug build:
 npm run build:debug
 ```
 
-Both write the unpacked extension to `dist/`. The Automatic Real Browser Benchmark exists only in the debug build and is removed from production bundles.
+Both write the unpacked extension to `dist/`. The benchmark UI is debug-only; history configuration and temporary session storage are part of the normal build.
 
-## Load the unpacked extension
+## v0.1 validation status
 
-1. Build with `npm run build` or `npm run build:debug`.
-2. Open `chrome://extensions`.
-3. Enable **Developer mode**.
-4. Choose **Load unpacked**.
-5. Select this repository's `dist/` directory.
+The previous real benchmark proves that the original Balanced 8-round configuration can avoid the Control heap growth observed in that workload. It does **not** yet prove that Ultra Lite, 1 round, or 1 message is lighter or more stable.
 
-## One-click real-browser benchmark
-
-The debug build turns the previous manual 50/100-switch protocol into an automatic benchmark.
-
-1. Run `npm run build:debug` and load `dist/`.
-2. Open a logged-in `https://chatgpt.com/` tab whose sidebar exposes at least five normal `/c/{conversationId}` conversations.
-3. Open the extension popup.
-4. Choose 50 or 100 switches per mode.
-5. Click **Start Benchmark**.
-6. Leave ChatGPT alone until the benchmark completes.
-7. Download JSON and Markdown results from the popup or the small in-page benchmark panel.
-
-The runner automatically performs fresh-renderer groups for:
-
-- Control — Network Guard OFF, DOM Window OFF, Hard Switch OFF.
-- Balanced — normal Balanced optimization, Hard Switch OFF.
-- Aggressive — Aggressive DOM reclamation, Hard Switch OFF.
-
-Every 10 switches it records DOM counts, rendered rounds, cleanup count, network mode/turn limits, JS heap when Chrome exposes it, switch latency, route, and Long Task counters when supported.
-
-If Aggressive keeps conversation DOM stable while heap still shows strong growth, the result is explicitly diagnosed as likely retained SPA state/cache and the UI offers **Run Session GC Benchmark**. That optional second phase performs controlled full renderer recreation at spaced intervals; it is never mixed into the first three groups.
-
-See [`docs/automatic-real-browser-benchmark.md`](docs/automatic-real-browser-benchmark.md) for details.
-
-## Benchmark conclusions
-
-The report can return only one of:
-
-- `proven improvement`
-- `partial improvement`
-- `inconclusive`
-- `regression`
-
-A completed run is not automatically considered successful. If the Control run does not reproduce sustained growth, the report remains `inconclusive`. If optimized modes grow more strongly than Control, the report can explicitly mark a regression.
-
-Chrome renderer-process memory is intentionally not collected automatically because doing so would require unrelated or unstable browser capabilities. JS heap + DOM + latency + Long Tasks are the first-stage automatic metrics; renderer memory remains optional supplementary evidence.
-
-## Current v0.1 status
-
-The core implementation, automatic benchmark runner, debug-only instrumentation, unit tests, and production build are implemented. A real logged-in Chrome benchmark still has to be run before v0.1 can truthfully claim that it materially improves the target workload and before `main` should be treated as validated.
+The feature branch must not be merged to `main` until a new logged-in real-browser Standard Validation and Long Conversation Stress run confirm that Ultra Lite provides a measurable benefit without breaking Tool/Thinking/confirmation/streaming behavior.

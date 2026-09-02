@@ -1,130 +1,87 @@
 # Real Browser Benchmark Status
 
-## Status
+## Known completed baseline
 
-**PENDING REAL RUN**
+The completed logged-in 50-switch benchmark before Ultra Lite produced:
 
-The automatic benchmark harness is implemented, but no logged-in real Chrome benchmark result is committed here yet.
+| Mode | JS Heap | Classification |
+|---|---:|---|
+| Control | 186.8 → 437.1 MB (+134%) | strong growth |
+| Balanced | 331.7 → 315.3 MB | stable |
+| Aggressive | 400.3 → 805.5 MB (+101%) | regression |
 
-This file must not be treated as performance proof until a generated JSON/Markdown report from the debug build has been reviewed.
+Interpretation:
 
-## Required run
+- Balanced is the current reliable default direction.
+- Aggressive must remain Experimental.
+- This result does not justify enabling Session GC / Hard Switch by default.
+- The current ChatGPT initial paginated request was observed with `num_turns=10`; Balanced reduced it to 8.
 
-Use the one-click workflow in [`automatic-real-browser-benchmark.md`](automatic-real-browser-benchmark.md):
+## New validation required
 
-```text
-npm run build:debug
-Load dist/
-Open logged-in ChatGPT
-Start Benchmark
-Download results
-```
+The Ultra Lite/history-rendering change has **not yet been validated in a logged-in real Chrome run**.
 
-The default benchmark performs 50 real SPA conversation switches per mode. The extended option performs 100.
-
-Mandatory modes:
-
-1. Control
-2. Balanced
-3. Aggressive
-
-Hard Switch is OFF for all three.
-
-If Aggressive reports stable conversation DOM but strong heap growth, run the optional Session GC benchmark separately.
-
-## Automatic sample schedule
-
-For 50 switches:
-
-| Switch | Control | Balanced | Aggressive |
-|---:|---|---|---|
-| 0 | PENDING | PENDING | PENDING |
-| 10 | PENDING | PENDING | PENDING |
-| 20 | PENDING | PENDING | PENDING |
-| 30 | PENDING | PENDING | PENDING |
-| 40 | PENDING | PENDING | PENDING |
-| 50 | PENDING | PENDING | PENDING |
-
-For 100 switches, samples at 60/70/80/90/100 are added automatically.
-
-Each generated sample includes numeric values for:
-
-- conversation DOM nodes
-- total document DOM nodes
-- rendered rounds
-- cleanup count
-- hard-switch count
-- Network Guard mode and requested/effective turns
-- JS heap when available
-- switch latency
-- Long Task count/blocking time when supported
-- route/conversation ID used for benchmark coordination
-
-No conversation text is included.
-
-## Analysis rules
-
-The generated report performs trend analysis over the full sampled series instead of comparing only switch 0 with the final switch.
-
-Each DOM/heap series is classified as:
+The new Standard Validation must run:
 
 ```text
-stable
-moderate growth
-strong growth
-N/A
+Control
+Balanced · 8 rounds
+Ultra Lite · 1 round
 ```
 
-The report also calculates median and p95 switch latency from all successful switches.
-
-A specific diagnostic is emitted when:
+Preferred confirmation run:
 
 ```text
-conversation DOM = stable
-JS Heap = strong growth
+100 switches / mode
 ```
 
-as:
+A shorter 50-switch regression run remains available.
+
+Success requires at minimum:
+
+1. Control still reproduces the target growth or otherwise provides a usable comparison.
+2. Balanced does not regress from the known stable baseline.
+3. Ultra Lite is at least as stable as Balanced.
+4. Ultra Lite provides a measurable improvement in active DOM, heap, Long Tasks, p95/median switch latency, or another relevant browser-side working-set metric.
+5. Tool/Thinking/confirmation/streaming behavior is not broken.
+
+If Ultra Lite is only conceptually smaller but produces no measurable real-browser benefit, it must not be described as “recommended for maximum performance.”
+
+## 1-message validation
+
+`1 message` is the most aggressive user-visible history target and requires a separate real run/Long Conversation Stress sample.
+
+The safety rule is intentionally stronger than the display number:
+
+- settled chat: latest visible message can be the only rendered user/assistant bubble;
+- active streaming: the latest whole round is retained;
+- tool/thinking descendants within the current assistant are retained;
+- confirmation/focus/upload/modal state can expand the window.
+
+Therefore “1 message” means a user-visible history target, not “the entire page must contain one DOM node.”
+
+## Long Conversation Stress
+
+The debug build now runs the current existing long conversation through:
 
 ```text
-DOM stable, heap continues growing; likely retained SPA state/cache.
+8 rounds → 4 rounds → 2 rounds → 1 round → 1 message
 ```
 
-This condition recommends the separate Session GC benchmark.
+It records working-set and responsiveness proxies without generating new conversation content.
 
-## Success criteria
+This is necessary because the earlier switch benchmark often rendered only a few rounds and therefore could not answer how much a genuinely long current conversation benefits from a 1-round/1-message window.
 
-A generated benchmark may conclude:
+## Network validation still pending
 
-### proven improvement
+The new code uses `MIN_SAFE_NETWORK_TURNS=4` for history targets below four.
 
-The Control group reproduces sustained growth and an optimized strategy reaches a stable working set without a severe switch-latency regression, or a separately tested Session GC strategy converts retained heap growth into a stable working set.
+The previous real run proved `10 → 8`; it did **not** prove `10 → 4`, and it did not validate direct `num_turns=1/2` behavior. The implementation deliberately avoids 1/2 until a compatibility matrix justifies lowering the floor.
 
-### partial improvement
+## Merge rule
 
-An optimized strategy improves the observed growth class but does not fully stabilize the working set.
+Do not merge `feat/v0.1-session-guard` to `main` until the new Standard Validation + Long Conversation Stress + live compatibility checks are reviewed.
 
-### inconclusive
+At the moment the correct statement is:
 
-Examples:
-
-- Control does not reproduce the target growth.
-- a mode fails navigation/stabilization repeatedly
-- JS heap is unavailable and DOM/latency data is insufficient
-- optimized groups do not clearly separate from Control
-
-### regression
-
-An optimization mode produces a worse growth class or a severe latency regression relative to a stable Control.
-
-## Renderer process memory
-
-Chrome Task Manager renderer-process memory is intentionally not part of the required automated benchmark because the extension does not request unrelated high-risk permissions or depend on unstable process APIs.
-
-It can be supplied as optional external evidence later, but the first-stage benchmark is intentionally based on JS Heap + DOM + switch latency + Long Tasks.
-
-## Rule for merging v0.1
-
-Do not merge `feat/v0.1-session-guard` into `main` solely because the automated harness exists or completes.
-
-A real logged-in benchmark must first provide evidence that the target workload materially improves without breaking core ChatGPT behavior.
+> Balanced is proven stable in the previous real workload. Ultra Lite / 1 round / 1 message are implemented and automatically testable, but their real performance advantage is not yet proven.

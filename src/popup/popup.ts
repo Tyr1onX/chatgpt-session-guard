@@ -1,9 +1,20 @@
 import {
   benchmarkFilename,
   benchmarkReport,
+  type BenchmarkProfile,
   type BenchmarkState
 } from '../shared/benchmark';
-import { DEFAULT_CONFIG, STORAGE_KEY, normalizeConfig, type GuardConfig, type GuardMode } from '../shared/config';
+import {
+  DEFAULT_CONFIG,
+  STORAGE_KEY,
+  applyModePreset,
+  normalizeConfig,
+  persistentConfig,
+  type GuardConfig,
+  type GuardMode,
+  type HistoryUnit
+} from '../shared/config';
+import { longStressFilename, longStressReport, type LongStressState } from '../shared/long-stress';
 import type { DebugMetrics, PopupRequest, PopupResponse } from '../shared/types';
 
 declare const __CSG_DEBUG_BUILD__: boolean;
@@ -15,12 +26,21 @@ function element<T extends HTMLElement>(id: string): T {
 }
 
 const modeSelect = element<HTMLSelectElement>('mode');
-const recentRoundsInput = element<HTMLInputElement>('recentRounds');
+const historyPreset = element<HTMLSelectElement>('historyPreset');
+const historyCustom = element<HTMLElement>('historyCustom');
+const historyUnit = element<HTMLSelectElement>('historyUnit');
+const historyCount = element<HTMLInputElement>('historyCount');
+const historyBatchSize = element<HTMLSelectElement>('historyBatchSize');
+const loadPreviousHistory = element<HTMLButtonElement>('loadPreviousHistory');
+const historyStatus = element<HTMLElement>('historyStatus');
+const autoLoadHistory = element<HTMLSelectElement>('autoLoadHistory');
 const toggleButton = element<HTMLButtonElement>('toggleEnabled');
 const fullHistoryButton = element<HTMLButtonElement>('fullHistory');
 const statusText = element<HTMLElement>('statusText');
 const statusDot = element<HTMLElement>('statusDot');
 const sessionState = element<HTMLElement>('sessionState');
+const activeHistory = element<HTMLElement>('activeHistory');
+const domBudgetState = element<HTMLElement>('domBudgetState');
 const warning = element<HTMLElement>('warning');
 const metricsList = element<HTMLDListElement>('metrics');
 
@@ -32,7 +52,7 @@ async function loadConfig(): Promise<GuardConfig> {
 }
 
 async function saveConfig(next: GuardConfig): Promise<void> {
-  config = normalizeConfig(next);
+  config = normalizeConfig(persistentConfig(next));
   await chrome.storage.local.set({ [STORAGE_KEY]: config });
   renderConfig();
 }
@@ -60,20 +80,35 @@ async function getMetrics(): Promise<DebugMetrics | null> {
   return (await sendToActiveTab({ type: 'csg:get-state' }))?.metrics ?? null;
 }
 
+function matchingPreset(): string {
+  const exact = `${config.historyUnit}:${config.historyCount}`;
+  return new Set(['message:1', 'round:1', 'round:2', 'round:4', 'round:8', 'round:16']).has(exact)
+    ? exact
+    : 'custom';
+}
+
 function renderConfig(): void {
   modeSelect.value = config.mode;
-  recentRoundsInput.value = String(config.recentRounds);
+  historyPreset.value = matchingPreset();
+  historyCustom.hidden = historyPreset.value !== 'custom';
+  historyUnit.value = config.historyUnit;
+  historyCount.value = String(config.historyCount);
+  historyBatchSize.value = String(config.historyBatchSize);
+  autoLoadHistory.value = String(config.autoLoadHistory);
+  autoLoadHistory.disabled = config.mode === 'ultra-lite';
   statusText.textContent = `Status: ${config.enabled ? 'ON' : 'OFF'}`;
   statusDot.classList.toggle('off', !config.enabled);
   toggleButton.textContent = config.enabled ? 'Disable' : 'Enable';
   fullHistoryButton.textContent = config.temporaryFullHistory ? 'Restore Lightweight Mode' : 'Temporary Full History';
   warning.hidden = config.mode !== 'aggressive';
+  domBudgetState.textContent = `Auto · ${Math.round(config.domBudget / 1000)}k`;
 }
 
 function renderMetrics(metrics: DebugMetrics | null): void {
   metricsList.replaceChildren();
   if (!metrics) {
     sessionState.textContent = 'Unavailable';
+    activeHistory.textContent = '—';
     return;
   }
 
@@ -81,10 +116,16 @@ function renderMetrics(metrics: DebugMetrics | null): void {
   else if (metrics.activeConversationDomNodes <= config.domBudget) sessionState.textContent = 'Clean';
   else sessionState.textContent = 'Pressure';
 
+  const unit = metrics.historyUnit === 'message' ? 'messages' : 'rounds';
+  const active = metrics.historyUnit === 'message' ? metrics.renderedMessages : metrics.renderedRounds;
+  activeHistory.textContent = `${active} / ${metrics.configuredHistoryCount} ${unit}${metrics.limitedByDomBudget ? ' · budget-limited' : ''}`;
+
   const rows: Array<[string, string]> = [
     ['Conversation ID', metrics.conversationId ?? '—'],
     ['SPA switches', String(metrics.spaSwitchCount)],
     ['Rendered rounds', `${metrics.renderedRounds} / ${metrics.totalRounds}`],
+    ['Rendered messages', `${metrics.renderedMessages} / ${metrics.totalMessages}`],
+    ['History target', `${metrics.configuredHistoryCount} ${metrics.historyUnit}${metrics.limitedByDomBudget ? ' · budget-limited' : ''}`],
     ['Conversation DOM', String(metrics.conversationDomNodes)],
     ['Active DOM', String(metrics.activeConversationDomNodes)],
     ['Document DOM', String(metrics.totalDocumentDomNodes)],
@@ -118,6 +159,16 @@ function downloadText(filename: string, content: string, mime: string): void {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+async function loadLongStressState(): Promise<LongStressState | null> {
+  if (!__CSG_DEBUG_BUILD__) return null;
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'csg:long-stress-get' }) as { state?: LongStressState | null } | undefined;
+    return response?.state ?? null;
+  } catch {
+    return null;
+  }
+}
+
 async function loadBenchmarkState(): Promise<BenchmarkState | null> {
   if (!__CSG_DEBUG_BUILD__) return null;
   try {
@@ -137,6 +188,7 @@ function currentBenchmarkSample(state: BenchmarkState) {
 
 function setupBenchmarkUi(): void {
   if (!__CSG_DEBUG_BUILD__) return;
+  const profile = element<HTMLSelectElement>('benchmarkProfile');
   const conversations = element<HTMLElement>('benchmarkConversations');
   const mode = element<HTMLElement>('benchmarkMode');
   const progress = element<HTMLElement>('benchmarkProgress');
@@ -152,6 +204,13 @@ function setupBenchmarkUi(): void {
   const json = element<HTMLButtonElement>('benchmarkJson');
   const report = element<HTMLButtonElement>('benchmarkReport');
   const sessionGc = element<HTMLButtonElement>('benchmarkSessionGc');
+  const longStressMessage = element<HTMLElement>('longStressMessage');
+  const longStressStart = element<HTMLButtonElement>('longStressStart');
+  const longStressStop = element<HTMLButtonElement>('longStressStop');
+  const longStressDownloads = element<HTMLElement>('longStressDownloads');
+  const longStressJson = element<HTMLButtonElement>('longStressJson');
+  const longStressReportButton = element<HTMLButtonElement>('longStressReport');
+  let latestLongStress: LongStressState | null = null;
   let latestState: BenchmarkState | null = null;
 
   const activeStatuses = new Set(['preparing', 'reloading', 'running', 'paused-busy', 'paused-user', 'retrying']);
@@ -176,79 +235,92 @@ function setupBenchmarkUi(): void {
           ? 'Benchmark stopped.'
           : active
             ? 'Benchmark is running automatically. Avoid interacting with ChatGPT until it finishes.'
-            : 'Control → Balanced → Aggressive. Hard Switch stays off.'
+            : profile.value === 'experimental'
+              ? 'Experimental profile runs Aggressive only. Session GC stays separate.'
+              : 'Standard Validation compares Control, Balanced and Ultra Lite. Hard Switch stays off.'
     );
     start.hidden = active;
     start.textContent = state && ['complete', 'stopped', 'failed'].includes(state.status) ? 'Start New Benchmark' : 'Start Benchmark';
     stop.hidden = !active;
     resume.hidden = state?.status !== 'paused-user';
     downloads.hidden = state?.status !== 'complete';
-    sessionGc.hidden = !(state?.status === 'complete' && state.phase === 'primary' && state.results.aggressive.analysis?.spaRetainedStateLikely === true && !state.sessionGc);
+    sessionGc.hidden = !(state?.status === 'complete' && state.profile === 'experimental' && state.results.aggressive.analysis?.spaRetainedStateLikely === true && !state.sessionGc);
     loops.disabled = active;
+    profile.disabled = active;
     modeSelect.disabled = active;
-    recentRoundsInput.disabled = active;
+    historyPreset.disabled = active;
+    historyBatchSize.disabled = active;
+    autoLoadHistory.disabled = active || config.mode === 'ultra-lite';
     toggleButton.disabled = active;
     fullHistoryButton.disabled = active;
+    loadPreviousHistory.disabled = active;
   };
 
   const refresh = async (): Promise<void> => {
     render(await loadBenchmarkState());
+    latestLongStress = await loadLongStressState();
+    const stressActive = latestLongStress ? ['preparing', 'reloading', 'measuring'].includes(latestLongStress.status) : false;
+    longStressStart.hidden = stressActive;
+    longStressStop.hidden = !stressActive;
+    longStressDownloads.hidden = latestLongStress?.status !== 'complete';
+    longStressMessage.textContent = latestLongStress
+      ? latestLongStress.error ?? (latestLongStress.status === 'complete'
+        ? 'Long Conversation Stress complete.'
+        : `Long Stress: step ${Math.min(latestLongStress.stepIndex + 1, 5)} / 5 · ${latestLongStress.status}`)
+      : 'Tests this current long conversation at 8r / 4r / 2r / 1r / 1 message.';
   };
-
   loops.addEventListener('change', () => {
-    if (!latestState || !activeStatuses.has(latestState.status)) {
-      progress.textContent = `0 / ${Number(loops.value) * 10}`;
-    }
+    if (!latestState || !activeStatuses.has(latestState.status)) progress.textContent = `0 / ${Number(loops.value) * 10}`;
   });
+  profile.addEventListener('change', () => render(latestState));
 
   start.addEventListener('click', async () => {
     message.textContent = 'Starting benchmark…';
-    const requestedLoops = loops.value === '10' ? 10 : 5;
-    const response = await sendToActiveTab({ type: 'csg:benchmark-start', loops: requestedLoops });
+    const requestedLoops = loops.value === '5' ? 5 : 10;
+    const requestedProfile: BenchmarkProfile = profile.value === 'experimental' ? 'experimental' : 'standard';
+    const response = await sendToActiveTab({ type: 'csg:benchmark-start', loops: requestedLoops, profile: requestedProfile });
     if (!response?.ok) {
       message.textContent = response?.error ?? 'Open a logged-in chatgpt.com tab and try again.';
       return;
     }
     await refresh();
   });
-
-  stop.addEventListener('click', async () => {
-    await sendToActiveTab({ type: 'csg:benchmark-stop' });
-    await refresh();
+  stop.addEventListener('click', async () => { await sendToActiveTab({ type: 'csg:benchmark-stop' }); await refresh(); });
+  resume.addEventListener('click', async () => { await sendToActiveTab({ type: 'csg:benchmark-resume' }); await refresh(); });
+  sessionGc.addEventListener('click', async () => {
+    const response = await sendToActiveTab({ type: 'csg:session-gc-start' });
+    if (!response?.ok) message.textContent = response?.error ?? 'Unable to start Session GC benchmark.';
+    else await refresh();
   });
-
-  resume.addEventListener('click', async () => {
-    await sendToActiveTab({ type: 'csg:benchmark-resume' });
-    await refresh();
-  });
-
   json.addEventListener('click', () => {
     if (!latestState) return;
     const timestamp = latestState.completedAt ?? Date.now();
-    downloadText(
-      benchmarkFilename('benchmark-results', timestamp, 'json'),
-      JSON.stringify(latestState, null, 2),
-      'application/json;charset=utf-8'
-    );
+    downloadText(benchmarkFilename('benchmark-results', timestamp, 'json'), JSON.stringify(latestState, null, 2), 'application/json;charset=utf-8');
   });
-
-  sessionGc.addEventListener('click', async () => {
-    const response = await sendToActiveTab({ type: 'csg:session-gc-start' });
-    if (!response?.ok) {
-      message.textContent = response?.error ?? 'Unable to start Session GC benchmark.';
-      return;
-    }
-    await refresh();
-  });
-
   report.addEventListener('click', () => {
     if (!latestState) return;
     const timestamp = latestState.completedAt ?? Date.now();
-    downloadText(
-      benchmarkFilename('benchmark-report', timestamp, 'md'),
-      benchmarkReport(latestState),
-      'text/markdown;charset=utf-8'
-    );
+    downloadText(benchmarkFilename('benchmark-report', timestamp, 'md'), benchmarkReport(latestState), 'text/markdown;charset=utf-8');
+  });
+  longStressStart.addEventListener('click', async () => {
+    longStressMessage.textContent = 'Starting Long Conversation Stress…';
+    const response = await sendToActiveTab({ type: 'csg:long-stress-start' });
+    if (!response?.ok) longStressMessage.textContent = response?.error ?? 'Unable to start Long Conversation Stress.';
+    else await refresh();
+  });
+  longStressStop.addEventListener('click', async () => {
+    await sendToActiveTab({ type: 'csg:long-stress-stop' });
+    await refresh();
+  });
+  longStressJson.addEventListener('click', () => {
+    if (!latestLongStress) return;
+    const timestamp = latestLongStress.completedAt ?? Date.now();
+    downloadText(longStressFilename('long-stress-results', timestamp, 'json'), JSON.stringify(latestLongStress, null, 2), 'application/json;charset=utf-8');
+  });
+  longStressReportButton.addEventListener('click', () => {
+    if (!latestLongStress) return;
+    const timestamp = latestLongStress.completedAt ?? Date.now();
+    downloadText(longStressFilename('long-stress-report', timestamp, 'md'), longStressReport(latestLongStress), 'text/markdown;charset=utf-8');
   });
 
   void refresh();
@@ -257,28 +329,53 @@ function setupBenchmarkUi(): void {
 
 modeSelect.addEventListener('change', () => {
   const mode = modeSelect.value as GuardMode;
-  void saveConfig({ ...config, mode });
-});
-
-recentRoundsInput.addEventListener('change', () => {
-  const recentRounds = Number.parseInt(recentRoundsInput.value, 10);
-  void saveConfig({ ...config, recentRounds });
-});
-
-toggleButton.addEventListener('click', () => {
-  void saveConfig({ ...config, enabled: !config.enabled });
-});
-
-fullHistoryButton.addEventListener('click', async () => {
-  await saveConfig({ ...config, temporaryFullHistory: !config.temporaryFullHistory });
-  const tab = await activeTab();
-  if (typeof tab?.id === 'number') {
-    try {
-      await chrome.tabs.reload(tab.id);
-    } catch {
-      // Storage state still applies on the user's next manual reload.
-    }
+  let next = applyModePreset(config, mode);
+  if (config.mode === 'ultra-lite' && mode === 'balanced' && config.historyUnit === 'round' && config.historyCount === 1) {
+    next = normalizeConfig({ ...next, historyUnit: 'round', historyCount: 8 });
   }
+  void saveConfig(next);
+});
+
+historyPreset.addEventListener('change', () => {
+  const value = historyPreset.value;
+  historyCustom.hidden = value !== 'custom';
+  if (value === 'custom') return;
+  const [unit, count] = value.split(':');
+  if ((unit === 'message' || unit === 'round') && count) {
+    void saveConfig({ ...config, historyUnit: unit, historyCount: Number.parseInt(count, 10) });
+  }
+});
+
+const saveCustomHistory = (): void => {
+  const unit: HistoryUnit = historyUnit.value === 'message' ? 'message' : 'round';
+  const count = Math.min(50, Math.max(1, Number.parseInt(historyCount.value, 10) || 1));
+  void saveConfig({ ...config, historyUnit: unit, historyCount: count });
+};
+historyUnit.addEventListener('change', saveCustomHistory);
+historyCount.addEventListener('change', saveCustomHistory);
+autoLoadHistory.addEventListener('change', () => {
+  const enabled = config.mode === 'ultra-lite' ? false : autoLoadHistory.value === 'true';
+  void saveConfig({ ...config, autoLoadHistory: enabled });
+});
+
+historyBatchSize.addEventListener('change', () => {
+  const batch = Math.min(50, Math.max(1, Number.parseInt(historyBatchSize.value, 10) || 10));
+  void saveConfig({ ...config, historyBatchSize: batch });
+});
+
+loadPreviousHistory.addEventListener('click', async () => {
+  historyStatus.textContent = 'Preparing older history…';
+  const response = await sendToActiveTab({ type: 'csg:history-load-previous' });
+  if (!response?.ok) historyStatus.textContent = response?.error ?? 'Unable to load older history.';
+});
+
+toggleButton.addEventListener('click', () => { void saveConfig({ ...config, enabled: !config.enabled }); });
+fullHistoryButton.addEventListener('click', async () => {
+  const request: PopupRequest = config.temporaryFullHistory
+    ? { type: 'csg:restore-lightweight' }
+    : { type: 'csg:temporary-full-history' };
+  const response = await sendToActiveTab(request);
+  if (!response?.ok) historyStatus.textContent = response?.error ?? 'Unable to reload current history mode.';
 });
 
 void (async () => {
