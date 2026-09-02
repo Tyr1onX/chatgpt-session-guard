@@ -31,3 +31,14 @@ jobs:
 
       - name: Audit
         run: npm audit --audit-level=high
+
+      - name: Build debug stability package
+        run: npm run build:debug
+
+      - name: Upload debug stability package
+        uses: actions/upload-artifact@v4
+        with:
+          name: chatgpt-session-guard-stability-debug-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
