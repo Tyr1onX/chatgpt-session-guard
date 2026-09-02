@@ -14,8 +14,6 @@ export interface PaginatedAdaptResult {
   modified: false;
 }
 
-const KNOWN_OLDER_PAGE_QUERY_KEYS = new Set(['before', 'include_has_versions', 'num_turns']);
-
 function rewriteInputUrl(input: RequestInfo | URL, url: URL): RequestInfo | URL {
   if (input instanceof Request) return new Request(url.toString(), input);
   if (input instanceof URL) return url;
@@ -68,9 +66,10 @@ export function isKnownOlderPageRequestShape(classification: ClassifiedRequest):
   if (classification.method !== 'GET' || classification.kind !== 'paginated-conversation-page') return false;
   const before = classification.url.searchParams.get('before');
   if (!before) return false;
-  for (const key of classification.url.searchParams.keys()) {
-    if (!KNOWN_OLDER_PAGE_QUERY_KEYS.has(key)) return false;
-  }
+  // `before` is the semantic marker for an older-history page on this exact endpoint.
+  // ChatGPT can add internal query flags without changing that meaning; fail-closed here so
+  // harmless parameter drift cannot bypass Ultra Lite's zero older-page network guarantee.
+  if (classification.url.searchParams.has('after')) return false;
   const numTurns = classification.url.searchParams.get('num_turns');
   if (numTurns !== null && (!/^\d+$/.test(numTurns) || Number(numTurns) < 1 || Number(numTurns) > 100)) return false;
   return true;
