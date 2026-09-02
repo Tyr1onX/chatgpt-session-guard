@@ -1,9 +1,13 @@
 import type { GuardConfig } from '../shared/config';
+import { dispatchStringEvent } from '../shared/events';
 import { classifyRequest } from './request-classifier';
+
+declare const __CSG_DEBUG_BUILD__: boolean;
 
 export type HistoryConfigResolver = () => GuardConfig | null;
 export type HistoryClock = () => number;
 
+const STABILITY_NETWORK_TRACE_EVENT = 'csg:stability-network-trace';
 const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 1500;
 const MIN_RATE_LIMIT_COOLDOWN_MS = 500;
 const MAX_RATE_LIMIT_COOLDOWN_MS = 30_000;
@@ -14,19 +18,46 @@ interface RateLimitCooldown {
   expiresAt: number;
 }
 
+type ProtectionKind = 'single-flight-hit' | 'rate-limit-cooldown-start' | 'rate-limit-cooldown-hit';
+
+function classifyHistoryRequest(args: Parameters<typeof fetch>) {
+  const [input, init] = args;
+  try {
+    const classification = classifyRequest(input, init);
+    return classification.kind === 'other' ? null : classification;
+  } catch {
+    return null;
+  }
+}
+
+function emitProtectionTrace(
+  args: Parameters<typeof fetch>,
+  protection: ProtectionKind,
+  cooldownMs?: number
+): void {
+  if (!__CSG_DEBUG_BUILD__) return;
+  const classification = classifyHistoryRequest(args);
+  if (!classification) return;
+  dispatchStringEvent(STABILITY_NETWORK_TRACE_EVENT, {
+    timestamp: Date.now(),
+    type: 'history-protection',
+    kind: classification.kind,
+    conversationId: classification.conversationId,
+    pathname: classification.url.pathname,
+    queryKeys: [...classification.url.searchParams.keys()].sort(),
+    protection,
+    ...(cooldownMs === undefined ? {} : { cooldownMs })
+  });
+}
+
 function requestFingerprint(args: Parameters<typeof fetch>): string | null {
   const [input, init] = args;
   // Request objects always carry a signal. Conservatively preserve their per-call abort
   // semantics instead of sharing one transport across callers.
   if (input instanceof Request || init?.signal) return null;
 
-  let classification;
-  try {
-    classification = classifyRequest(input, init);
-  } catch {
-    return null;
-  }
-  if (classification.kind === 'other' || classification.method !== 'GET') return null;
+  const classification = classifyHistoryRequest(args);
+  if (!classification || classification.method !== 'GET') return null;
 
   const headers = [...new Headers(init?.headers).entries()].sort(([a], [b]) => a.localeCompare(b));
   return JSON.stringify({
@@ -79,16 +110,23 @@ export function createHistorySingleFlightFetch(
     }
   };
 
-  const rememberRateLimit = (key: string, response: Response, timestamp: number): void => {
+  const rememberRateLimit = (
+    key: string,
+    response: Response,
+    timestamp: number,
+    args: Parameters<typeof fetch>
+  ): void => {
     pruneCooldowns(timestamp);
     if (rateLimitCooldowns.size >= MAX_COOLDOWN_ENTRIES && !rateLimitCooldowns.has(key)) {
       const oldestKey = rateLimitCooldowns.keys().next().value as string | undefined;
       if (oldestKey) rateLimitCooldowns.delete(oldestKey);
     }
+    const cooldownMs = rateLimitCooldownMs(response, timestamp);
     rateLimitCooldowns.set(key, {
       response,
-      expiresAt: timestamp + rateLimitCooldownMs(response, timestamp)
+      expiresAt: timestamp + cooldownMs
     });
+    emitProtectionTrace(args, 'rate-limit-cooldown-start', cooldownMs);
   };
 
   return async (...args: Parameters<typeof fetch>): Promise<Response> => {
@@ -107,17 +145,22 @@ export function createHistorySingleFlightFetch(
     const timestamp = now();
     pruneCooldowns(timestamp);
     const cooldown = rateLimitCooldowns.get(key);
-    if (cooldown && cooldown.expiresAt > timestamp) return cooldown.response.clone();
+    if (cooldown && cooldown.expiresAt > timestamp) {
+      emitProtectionTrace(args, 'rate-limit-cooldown-hit', cooldown.expiresAt - timestamp);
+      return cooldown.response.clone();
+    }
 
     let shared = inFlight.get(key);
-    if (!shared) {
+    if (shared) {
+      emitProtectionTrace(args, 'single-flight-hit');
+    } else {
       shared = nativeFetch(...args);
       inFlight.set(key, shared);
       const owned = shared;
       void owned.then(
         (response) => {
           if (inFlight.get(key) === owned) inFlight.delete(key);
-          if (response.status === 429) rememberRateLimit(key, response, now());
+          if (response.status === 429) rememberRateLimit(key, response, now(), args);
           else rateLimitCooldowns.delete(key);
         },
         () => { if (inFlight.get(key) === owned) inFlight.delete(key); }
