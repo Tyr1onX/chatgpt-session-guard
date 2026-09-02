@@ -96,4 +96,29 @@ describe('stability trace', () => {
     expect(summary.preflightSuppressedOlderPageCount).toBe(1);
     expect(summary.olderPageNetworkCount).toBe(1);
   });
+
+  it('summarizes single-flight and 429 cooldown protection events', () => {
+    const trace = new StabilityTraceCollector();
+    const protectionBase = {
+      timestamp: Date.now(),
+      type: 'history-protection',
+      kind: 'paginated-conversation-history',
+      conversationId: 'abc',
+      pathname: '/backend-api/conversations/abc',
+      queryKeys: ['num_turns']
+    };
+    trace.addNetwork({ ...protectionBase, protection: 'single-flight-hit' } as unknown as NetworkTraceEvent);
+    trace.addNetwork({ ...protectionBase, protection: 'single-flight-hit' } as unknown as NetworkTraceEvent);
+    trace.addNetwork({ ...protectionBase, protection: 'rate-limit-cooldown-start', cooldownMs: 2000 } as unknown as NetworkTraceEvent);
+    trace.addNetwork({ ...protectionBase, protection: 'rate-limit-cooldown-hit', cooldownMs: 1500 } as unknown as NetworkTraceEvent);
+
+    const snapshot = trace.snapshot();
+    expect(snapshot.summary.singleFlightHitCount).toBe(2);
+    expect(snapshot.summary.rateLimitCooldownStartCount).toBe(1);
+    expect(snapshot.summary.rateLimitCooldownHitCount).toBe(1);
+    expect(snapshot.summary.rateLimitCooldownMaxMs).toBe(2000);
+    const report = stabilityTraceReport(snapshot);
+    expect(report).toContain('Concurrent history requests coalesced: 2');
+    expect(report).toContain('Retries blocked by 429 cooldown: 1');
+  });
 });
