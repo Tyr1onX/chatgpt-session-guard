@@ -21,9 +21,11 @@ export interface StabilityTraceSummary {
   historyParseTotalMs: number;
   unclassifiedHistoryLikeCount: number;
   singleFlightHitCount: number;
+  rateLimitedHistoryRequestCount: number;
   rateLimitCooldownStartCount: number;
   rateLimitCooldownHitCount: number;
   rateLimitCooldownMaxMs: number;
+  restoredLastFailedOpen: boolean;
 }
 
 export interface StabilityTraceSnapshot {
@@ -43,6 +45,16 @@ type ProtectionView = NetworkTraceEvent & {
   protection?: ProtectionKind;
   cooldownMs?: number;
 };
+
+interface LastFailedOpenRecord {
+  version: 1;
+  capturedAt: number;
+  events: NetworkTraceEvent[];
+}
+
+const LAST_FAILED_OPEN_STORAGE_KEY = 'csg.stability.last-failed-open.v1';
+const LAST_FAILED_OPEN_MAX_AGE_MS = 30 * 60 * 1000;
+const LAST_FAILED_OPEN_EVENT_LIMIT = 100;
 
 function round(value: number): number {
   return Math.round(value * 100) / 100;
@@ -75,6 +87,18 @@ function protectionOf(event: NetworkTraceEvent): ProtectionKind | undefined {
   return (event as ProtectionView).protection;
 }
 
+function isRateLimitedHistory(event: NetworkTraceEvent): boolean {
+  return event.type === 'history-request' && event.status === 429;
+}
+
+function validLastFailedOpen(value: unknown, now: number): value is LastFailedOpenRecord {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<LastFailedOpenRecord>;
+  if (record.version !== 1 || typeof record.capturedAt !== 'number' || !Array.isArray(record.events)) return false;
+  if (record.capturedAt > now + 60_000 || now - record.capturedAt > LAST_FAILED_OPEN_MAX_AGE_MS) return false;
+  return record.events.some((event) => isRateLimitedHistory(event));
+}
+
 export class StabilityTraceCollector {
   private readonly startedAt = Date.now();
   private readonly sessionEvents: SessionTraceEvent[] = [];
@@ -82,6 +106,11 @@ export class StabilityTraceCollector {
   private readonly flappingReasons = new Set<string>();
   private boundaryChangeCount = 0;
   private lastBoundaryTurnId: string | null | undefined;
+  private restoredLastFailedOpen = false;
+
+  constructor() {
+    void this.restoreLastFailedOpenTrace();
+  }
 
   addSession(event: SessionTraceEvent): void {
     if (event.type === 'evaluate' && event.dom) {
@@ -98,6 +127,7 @@ export class StabilityTraceCollector {
   addNetwork(event: NetworkTraceEvent): void {
     this.networkEvents.push(event);
     if (this.networkEvents.length > 1000) this.networkEvents.splice(0, this.networkEvents.length - 1000);
+    if (isRateLimitedHistory(event)) void this.persistLastFailedOpenTrace();
   }
 
   snapshot(): StabilityTraceSnapshot {
@@ -109,17 +139,21 @@ export class StabilityTraceCollector {
     const preflight = historyRequests.filter((event) => isOlderPage(event) && event.preflightSuppressed === true);
     const parseValues = historyRequests.map((event) => event.historyParseMs ?? 0);
     const singleFlightHits = this.networkEvents.filter((event) => protectionOf(event) === 'single-flight-hit');
+    const rateLimitedHistory = historyRequests.filter((event) => event.status === 429);
     const cooldownStarts = this.networkEvents.filter((event) => protectionOf(event) === 'rate-limit-cooldown-start');
     const cooldownHits = this.networkEvents.filter((event) => protectionOf(event) === 'rate-limit-cooldown-hit');
     const cooldownValues = cooldownStarts
       .map((event) => (event as ProtectionView).cooldownMs ?? 0)
       .filter((value) => value > 0);
+    const alerts = this.flappingReasons.size > 0 ? ['WINDOW_FLAPPING_DETECTED'] : [];
+    if (rateLimitedHistory.length > 0) alerts.push('HISTORY_REQUEST_429');
+    if (this.restoredLastFailedOpen) alerts.push('LAST_FAILED_OPEN_RESTORED');
     return {
       version: 1,
       startedAt: this.startedAt,
       exportedAt: Date.now(),
       flappingDetected: this.flappingReasons.size > 0,
-      alerts: this.flappingReasons.size > 0 ? ['WINDOW_FLAPPING_DETECTED'] : [],
+      alerts,
       flappingReasons: [...this.flappingReasons],
       summary: {
         evaluateCount: durations.length,
@@ -141,13 +175,45 @@ export class StabilityTraceCollector {
         historyParseTotalMs: round(parseValues.reduce((sum, value) => sum + value, 0)),
         unclassifiedHistoryLikeCount: this.networkEvents.filter((event) => event.type === 'unclassified-history-like').length,
         singleFlightHitCount: singleFlightHits.length,
+        rateLimitedHistoryRequestCount: rateLimitedHistory.length,
         rateLimitCooldownStartCount: cooldownStarts.length,
         rateLimitCooldownHitCount: cooldownHits.length,
-        rateLimitCooldownMaxMs: round(Math.max(0, ...cooldownValues))
+        rateLimitCooldownMaxMs: round(Math.max(0, ...cooldownValues)),
+        restoredLastFailedOpen: this.restoredLastFailedOpen
       },
       sessionEvents: [...this.sessionEvents],
       networkEvents: [...this.networkEvents]
     };
+  }
+
+  private async persistLastFailedOpenTrace(): Promise<void> {
+    if (typeof chrome === 'undefined' || !chrome.storage?.local) return;
+    const record: LastFailedOpenRecord = {
+      version: 1,
+      capturedAt: Date.now(),
+      events: this.networkEvents.slice(-LAST_FAILED_OPEN_EVENT_LIMIT)
+    };
+    try {
+      await chrome.storage.local.set({ [LAST_FAILED_OPEN_STORAGE_KEY]: record });
+    } catch {
+      // Diagnostics must never interfere with ChatGPT or the guard itself.
+    }
+  }
+
+  private async restoreLastFailedOpenTrace(): Promise<void> {
+    if (typeof chrome === 'undefined' || !chrome.storage?.local) return;
+    try {
+      const stored = await chrome.storage.local.get(LAST_FAILED_OPEN_STORAGE_KEY);
+      const record = stored[LAST_FAILED_OPEN_STORAGE_KEY];
+      const now = Date.now();
+      if (!validLastFailedOpen(record, now)) return;
+      if (this.networkEvents.some((event) => isRateLimitedHistory(event))) return;
+      this.networkEvents.unshift(...record.events.slice(-LAST_FAILED_OPEN_EVENT_LIMIT));
+      if (this.networkEvents.length > 1000) this.networkEvents.splice(0, this.networkEvents.length - 1000);
+      this.restoredLastFailedOpen = true;
+    } catch {
+      // Missing/blocked storage simply means there is no recoverable prior failure trace.
+    }
   }
 
   private detectFlapping(): void {
@@ -175,6 +241,7 @@ export function stabilityTraceReport(snapshot: StabilityTraceSnapshot): string {
     `- Started: ${new Date(snapshot.startedAt).toISOString()}`,
     `- Exported: ${new Date(snapshot.exportedAt).toISOString()}`,
     `- Window flapping: ${snapshot.flappingDetected ? `DETECTED (${snapshot.flappingReasons.join(', ')})` : 'not detected'}`,
+    `- Previous failed-open 429 restored after reload: ${s.restoredLastFailedOpen ? 'yes' : 'no'}`,
     '',
     '## Evaluate',
     '',
@@ -195,6 +262,7 @@ export function stabilityTraceReport(snapshot: StabilityTraceSnapshot): string {
     '## Network',
     '',
     `- History requests traced: ${s.historyRequestCount}`,
+    `- History requests returning 429: ${s.rateLimitedHistoryRequestCount}`,
     `- Older-page requests that reached network/parse: ${s.olderPageNetworkCount}`,
     `- Older pages preflight-suppressed: ${s.preflightSuppressedOlderPageCount}`,
     `- Concurrent history requests coalesced: ${s.singleFlightHitCount}`,
