@@ -77,6 +77,29 @@ describe('history single-flight', () => {
     expect(nativeFetch).toHaveBeenCalledTimes(2);
   });
 
+  it('clears prior 429 cooldown state when the guard is explicitly bypassed', async () => {
+    let config = DEFAULT_CONFIG;
+    let timestamp = 1000;
+    const nativeFetch = vi.fn(async () => new Response('rate limited', {
+      status: 429,
+      headers: { 'retry-after': '30' }
+    })) as unknown as typeof fetch;
+    const guarded = createHistorySingleFlightFetch(nativeFetch, () => config, () => timestamp);
+    const url = `${location.origin}/backend-api/conversations/abc?num_turns=4`;
+
+    await guarded(url);
+    expect(nativeFetch).toHaveBeenCalledTimes(1);
+
+    config = normalizeConfig({ ...DEFAULT_CONFIG, enabled: false });
+    await guarded(url);
+    expect(nativeFetch).toHaveBeenCalledTimes(2);
+
+    config = DEFAULT_CONFIG;
+    timestamp = 1100;
+    await guarded(url);
+    expect(nativeFetch).toHaveBeenCalledTimes(3);
+  });
+
   it('does not cache after the underlying successful request settles', async () => {
     const nativeFetch = vi.fn(async () => new Response('{}')) as unknown as typeof fetch;
     const guarded = createHistorySingleFlightFetch(nativeFetch, () => DEFAULT_CONFIG);
