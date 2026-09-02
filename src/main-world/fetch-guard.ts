@@ -63,8 +63,17 @@ function updateConfig(config: GuardConfig): void {
   resolveFirstConfig = null;
 }
 
-async function configBeforeConversationRequest(timeoutMs = 60): Promise<GuardConfig | null> {
+async function configBeforeConversationRequest(timeoutMs = 500): Promise<GuardConfig | null> {
   if (currentConfig) return currentConfig;
+
+  // The MAIN-world script and the isolated content script both run at document_start, but
+  // their relative listener-install timing is not guaranteed. The bridge's initial request
+  // can therefore be missed. Re-request immediately when the first history fetch arrives so
+  // an already-mounted content listener can answer synchronously instead of letting an
+  // ultra-long conversation fail open into an unbounded history request chain.
+  window.dispatchEvent(new Event(EVENTS.requestConfig));
+  if (currentConfig) return currentConfig;
+
   await Promise.race([
     firstConfig,
     new Promise<void>((resolve) => window.setTimeout(resolve, timeoutMs))
@@ -354,7 +363,7 @@ export function createGuardedFetch(
     });
     if (__CSG_DEBUG_BUILD__ && traceSink) {
       const duration = (timing?.parseEnd ?? 0) - (timing?.parseStart ?? 0);
-        const heavy = heavyParseBucket(duration);
+      const heavy = heavyParseBucket(duration);
       traceSink({
         ...traceBase(classification),
         type: 'history-request',
