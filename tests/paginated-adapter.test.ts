@@ -54,13 +54,15 @@ describe('paginated conversation adapter', () => {
     expect(rewritePaginatedRequest(classifyRequest(other), config, [other]).effectiveTurns).toBe(4);
   });
 
-  it('recognizes before-cursor older pages even when ChatGPT adds query flags', () => {
+  it('recognizes before-cursor older pages despite query and page-size drift', () => {
     const known = classifyRequest(`${location.origin}/backend-api/conversations/abc/messages?before=cursor&include_has_versions=true&num_turns=100`);
     const queryDrift = classifyRequest(`${location.origin}/backend-api/conversations/abc/messages?before=cursor&future_flag=1`);
+    const pageSizeDrift = classifyRequest(`${location.origin}/backend-api/conversations/abc/messages?before=cursor&num_turns=250`);
     const missingCursor = classifyRequest(`${location.origin}/backend-api/conversations/abc/messages?num_turns=100`);
     const conflictingDirection = classifyRequest(`${location.origin}/backend-api/conversations/abc/messages?before=cursor&after=newer`);
     expect(isKnownOlderPageRequestShape(known)).toBe(true);
     expect(isKnownOlderPageRequestShape(queryDrift)).toBe(true);
+    expect(isKnownOlderPageRequestShape(pageSizeDrift)).toBe(true);
     expect(isKnownOlderPageRequestShape(missingCursor)).toBe(false);
     expect(isKnownOlderPageRequestShape(conflictingDirection)).toBe(false);
   });
