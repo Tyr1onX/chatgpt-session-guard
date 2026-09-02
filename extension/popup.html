@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ChatGPT Session Guard</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main class="panel">
+    <header>
+      <div>
+        <h1>ChatGPT Session Guard</h1>
+        <p id="statusText">Status: ON</p>
+      </div>
+      <span id="statusDot" class="dot"></span>
+    </header>
+
+    <label>Mode
+      <select id="mode">
+        <option value="safe">Safe</option>
+        <option value="balanced">Balanced</option>
+        <option value="aggressive">Aggressive · experimental</option>
+      </select>
+    </label>
+
+    <label>Recent rounds
+      <input id="recentRounds" type="number" min="4" max="20" step="1">
+    </label>
+
+    <div class="row"><span>DOM budget</span><strong>Auto · 7k</strong></div>
+    <div class="row"><span>Session</span><strong id="sessionState">Checking…</strong></div>
+
+    <div class="actions">
+      <button id="toggleEnabled" type="button">Disable</button>
+      <button id="fullHistory" type="button" class="secondary">Temporary Full History</button>
+    </div>
+
+    <p id="warning" class="warning" hidden>Aggressive mode removes settled old turn subtrees until ChatGPT is reloaded.</p>
+
+    <details>
+      <summary>Debug metrics</summary>
+      <dl id="metrics"></dl>
+    </details>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>
