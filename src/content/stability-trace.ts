@@ -20,6 +20,10 @@ export interface StabilityTraceSummary {
   heavyHistoryParseCount: number;
   historyParseTotalMs: number;
   unclassifiedHistoryLikeCount: number;
+  singleFlightHitCount: number;
+  rateLimitCooldownStartCount: number;
+  rateLimitCooldownHitCount: number;
+  rateLimitCooldownMaxMs: number;
 }
 
 export interface StabilityTraceSnapshot {
@@ -33,6 +37,12 @@ export interface StabilityTraceSnapshot {
   sessionEvents: SessionTraceEvent[];
   networkEvents: NetworkTraceEvent[];
 }
+
+type ProtectionKind = 'single-flight-hit' | 'rate-limit-cooldown-start' | 'rate-limit-cooldown-hit';
+type ProtectionView = NetworkTraceEvent & {
+  protection?: ProtectionKind;
+  cooldownMs?: number;
+};
 
 function round(value: number): number {
   return Math.round(value * 100) / 100;
@@ -59,6 +69,10 @@ function largeScrollAlternation(values: number[]): boolean {
 
 function isOlderPage(event: NetworkTraceEvent): boolean {
   return event.kind === 'paginated-conversation-page';
+}
+
+function protectionOf(event: NetworkTraceEvent): ProtectionKind | undefined {
+  return (event as ProtectionView).protection;
 }
 
 export class StabilityTraceCollector {
@@ -94,6 +108,12 @@ export class StabilityTraceCollector {
     const actualOlderNetwork = historyRequests.filter((event) => isOlderPage(event) && event.preflightSuppressed !== true);
     const preflight = historyRequests.filter((event) => isOlderPage(event) && event.preflightSuppressed === true);
     const parseValues = historyRequests.map((event) => event.historyParseMs ?? 0);
+    const singleFlightHits = this.networkEvents.filter((event) => protectionOf(event) === 'single-flight-hit');
+    const cooldownStarts = this.networkEvents.filter((event) => protectionOf(event) === 'rate-limit-cooldown-start');
+    const cooldownHits = this.networkEvents.filter((event) => protectionOf(event) === 'rate-limit-cooldown-hit');
+    const cooldownValues = cooldownStarts
+      .map((event) => (event as ProtectionView).cooldownMs ?? 0)
+      .filter((value) => value > 0);
     return {
       version: 1,
       startedAt: this.startedAt,
@@ -119,7 +139,11 @@ export class StabilityTraceCollector {
         preflightSuppressedOlderPageCount: preflight.length,
         heavyHistoryParseCount: historyRequests.filter((event) => event.heavyHistoryParse !== undefined).length,
         historyParseTotalMs: round(parseValues.reduce((sum, value) => sum + value, 0)),
-        unclassifiedHistoryLikeCount: this.networkEvents.filter((event) => event.type === 'unclassified-history-like').length
+        unclassifiedHistoryLikeCount: this.networkEvents.filter((event) => event.type === 'unclassified-history-like').length,
+        singleFlightHitCount: singleFlightHits.length,
+        rateLimitCooldownStartCount: cooldownStarts.length,
+        rateLimitCooldownHitCount: cooldownHits.length,
+        rateLimitCooldownMaxMs: round(Math.max(0, ...cooldownValues))
       },
       sessionEvents: [...this.sessionEvents],
       networkEvents: [...this.networkEvents]
@@ -173,6 +197,10 @@ export function stabilityTraceReport(snapshot: StabilityTraceSnapshot): string {
     `- History requests traced: ${s.historyRequestCount}`,
     `- Older-page requests that reached network/parse: ${s.olderPageNetworkCount}`,
     `- Older pages preflight-suppressed: ${s.preflightSuppressedOlderPageCount}`,
+    `- Concurrent history requests coalesced: ${s.singleFlightHitCount}`,
+    `- 429 cooldowns started: ${s.rateLimitCooldownStartCount}`,
+    `- Retries blocked by 429 cooldown: ${s.rateLimitCooldownHitCount}`,
+    `- Max observed 429 cooldown: ${s.rateLimitCooldownMaxMs} ms`,
     `- History parse total: ${s.historyParseTotalMs} ms`,
     `- Heavy history parses: ${s.heavyHistoryParseCount}`,
     `- Unclassified history-like GET paths: ${s.unclassifiedHistoryLikeCount}`,
