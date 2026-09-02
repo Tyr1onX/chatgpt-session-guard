@@ -52,7 +52,32 @@ describe('history single-flight', () => {
     expect(await responses[99]?.json()).toEqual({ messages: [] });
   });
 
-  it('does not cache after the underlying request settles', async () => {
+  it('reuses a real 429 during Retry-After cooldown instead of hitting the network again', async () => {
+    let timestamp = 1000;
+    const nativeFetch = vi.fn(async () => new Response('rate limited', {
+      status: 429,
+      headers: { 'retry-after': '2' }
+    })) as unknown as typeof fetch;
+    const guarded = createHistorySingleFlightFetch(nativeFetch, () => DEFAULT_CONFIG, () => timestamp);
+    const url = `${location.origin}/backend-api/conversations/abc?num_turns=4`;
+
+    const first = await guarded(url);
+    expect(first.status).toBe(429);
+    expect(nativeFetch).toHaveBeenCalledTimes(1);
+
+    timestamp = 2500;
+    const duringCooldown = await guarded(url);
+    expect(duringCooldown.status).toBe(429);
+    expect(await duringCooldown.text()).toBe('rate limited');
+    expect(nativeFetch).toHaveBeenCalledTimes(1);
+
+    timestamp = 3001;
+    const afterCooldown = await guarded(url);
+    expect(afterCooldown.status).toBe(429);
+    expect(nativeFetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not cache after the underlying successful request settles', async () => {
     const nativeFetch = vi.fn(async () => new Response('{}')) as unknown as typeof fetch;
     const guarded = createHistorySingleFlightFetch(nativeFetch, () => DEFAULT_CONFIG);
     const url = `${location.origin}/backend-api/conversations/abc?num_turns=4`;
