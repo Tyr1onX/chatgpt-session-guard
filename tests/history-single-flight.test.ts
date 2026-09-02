@@ -33,6 +33,25 @@ describe('history single-flight', () => {
     expect(await b.json()).toEqual({ ok: true });
   });
 
+  it('collapses a 100-request hydration burst into one network request', async () => {
+    const pending = deferredResponse();
+    const nativeFetch = vi.fn(() => pending.promise) as unknown as typeof fetch;
+    const guarded = createHistorySingleFlightFetch(nativeFetch, () => DEFAULT_CONFIG);
+    const url = `${location.origin}/backend-api/conversations/abc?num_turns=4`;
+
+    const requests = Array.from({ length: 100 }, () => guarded(url));
+    expect(nativeFetch).toHaveBeenCalledTimes(1);
+
+    pending.resolve(new Response(JSON.stringify({ messages: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' }
+    }));
+    const responses = await Promise.all(requests);
+    expect(responses).toHaveLength(100);
+    expect(await responses[0]?.json()).toEqual({ messages: [] });
+    expect(await responses[99]?.json()).toEqual({ messages: [] });
+  });
+
   it('does not cache after the underlying request settles', async () => {
     const nativeFetch = vi.fn(async () => new Response('{}')) as unknown as typeof fetch;
     const guarded = createHistorySingleFlightFetch(nativeFetch, () => DEFAULT_CONFIG);
