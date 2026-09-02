@@ -8,19 +8,47 @@ It reduces the browser-side history working set for people who leave ChatGPT Web
 
 ## Current evidence
 
-The first real logged-in Chrome benchmark established an important baseline:
+Ultra Lite demonstrated a **proven improvement in a real logged-in Chrome benchmark for the tested multi-conversation switching workload**.
 
-| Mode | 50-switch JS Heap | Result |
-|---|---:|---|
-| Control | 186.8 → 437.1 MB (+134%) | strong growth |
-| Balanced | 331.7 → 315.3 MB | stable |
-| Aggressive | 400.3 → 805.5 MB (+101%) | regression |
+The Standard Validation used five real conversations and 100 switches per mode:
 
-Therefore **Balanced remains the default**. Aggressive remains Experimental and is not part of the normal recommendation path.
+| Mode | JS Heap | Median switch | p95 switch | Result |
+|---|---:|---:|---:|---|
+| Control | 260.3 → 597.4 MB (+129.5%) | 1206.5 ms | 1531.4 ms | strong growth |
+| Balanced | 705.0 → 496.7 MB | 1197.0 ms | 1584.3 ms | stable |
+| Ultra Lite · 1 round | 618.8 → 327.9 MB | 1011.3 ms | 1281.1 ms | stable / proven improvement |
 
-The same real run confirmed the current paginated ChatGPT request uses `num_turns=10`, and the previous Balanced configuration reduced it to `8`.
+For Ultra Lite, the current ChatGPT initial history request was observed at `num_turns=10` and Session Guard reduced it to `4`. Its active conversation DOM working set was also substantially smaller than Balanced in the tested workload.
 
-**Ultra Lite has not yet been proven by a new real logged-in benchmark.** The debug benchmark now exists specifically to compare it against the known Balanced baseline.
+A real Long Conversation Stress run on one existing conversation recorded:
+
+| History target | Active DOM |
+|---|---:|
+| 8 rounds | 393 |
+| 4 rounds | 319 |
+| 2 rounds | 319 |
+| 1 round | 70 |
+| 1 message | 40 |
+
+These measurements support **Ultra Lite · 1 round** as the recommended maximum-performance configuration for this tested workload. **Balanced remains the more conservative default.** `1 message` remains an Extreme, user-selected option rather than the default.
+
+These results do **not** mean Session Guard fixes every ChatGPT memory leak or guarantees lower total RAM usage. JS heap is browser-side evidence, not total renderer-process memory, and ChatGPT's internal APIs/DOM can change.
+
+## Compatibility smoke
+
+Ultra Lite · 1 round was also exercised in a real logged-in Chrome + ChatGPT session with no known blocker in the tested core workflows:
+
+- ordinary messages and streaming
+- Thinking UI and final response
+- Web Search with citations/source UI
+- long code block rendering
+- PDF/file upload and reading
+- image upload and vision response
+- Load Previous 10 with conversation-local expansion
+- Temporary Full History and Restore Lightweight Mode
+- switching among multiple conversations without expansion leakage
+
+Confirmation / Permission and Branch Conversation were not reliably reproduced in the final manual smoke. They are therefore **not claimed as manually verified**, although automatic safety tests cover protected interaction and branch-preservation logic where applicable.
 
 ## History rendering
 
@@ -38,26 +66,27 @@ A **message** is a visible top-level user or assistant message bubble. Tool/thin
 
 A **round** begins with a user turn and includes its following assistant response set. Tool/thinking/internal nodes do not create artificial rounds.
 
-The configured count is a presentation target, not a promise that the entire page contains only that many DOM nodes. The safety window can temporarily retain extra active nodes for streaming, tool UI, confirmation dialogs, focused controls, or other live interactions. The DOM budget may also reduce an expensive configured window.
+The configured count is a presentation target, not a promise that the entire page contains only that many DOM nodes. The safety window can temporarily retain extra active nodes for streaming, tool UI, confirmation dialogs, focused controls, or other live interactions. The DOM budget may also reduce an expensive configured window, but it never splits the final required history unit just to hit a node target.
 
 ## Ultra Lite
 
 Ultra Lite is not a new deletion algorithm. It is the existing Balanced engine with a much smaller browser history working set.
 
-Default Ultra Lite preset:
+Recommended for maximum performance:
 
 ```text
-Visible history:       1 round
-Older history:         Manual only
-History batch:         10
-Network Guard:         ON
-DOM engine:            Balanced
-Aggressive removal:    OFF
-Hard Switch:           OFF
-DOM budget:            7000 (unchanged until real data justifies lowering it)
+Mode:                   Ultra Lite
+Visible history:        1 round
+Older history:          Manual only
+History batch:          10
+Network Guard:          ON
+MIN_SAFE_NETWORK_TURNS: 4
+DOM engine:             Balanced
+Aggressive removal:     OFF
+Hard Switch:            OFF
 ```
 
-**Ultra Lite can keep only the latest message or latest round visible while the full conversation remains on ChatGPT's servers.** Select Ultra Lite, then change Visible history to `1 message` if that is the desired working style.
+**Ultra Lite can keep only the latest message or latest round visible while the full conversation remains on ChatGPT's servers.** Select Ultra Lite, then change Visible history to `1 message` only if the Extreme working style is desired.
 
 ## Network Guard
 
@@ -67,9 +96,9 @@ For the current paginated endpoint:
 GET /backend-api/conversations/{conversationId}?num_turns=N
 ```
 
-Session Guard lowers an already-present valid `num_turns`; it never increases ChatGPT's request and never modifies POST/stream/tool/upload/confirmation traffic.
+Session Guard lowers an already-present valid `num_turns`; it never increases ChatGPT's request and never intentionally modifies POST/stream/tool/upload/confirmation traffic.
 
-Because low `num_turns` semantics are not publicly documented for Tool/Thinking/Branch conversations, v0.1 currently uses:
+Because low `num_turns` semantics are private/unsupported ChatGPT implementation details, v0.1 keeps a conservative floor:
 
 ```text
 MIN_SAFE_NETWORK_TURNS = 4
@@ -83,7 +112,7 @@ Ultra Lite 1 round → 10 → 4
 1 visible message  → 10 → 4
 ```
 
-`num_turns=1/2/4` have **not** all been validated in a real logged-in compatibility matrix. The floor of 4 is deliberately conservative until that validation exists.
+`10 → 4` was exercised successfully in the real Ultra Lite performance run and core compatibility smoke, including ordinary streaming, Thinking, Web Search, file upload, and image upload. This is evidence for the tested workflows, not an official guarantee that `num_turns=4` is universally safe for every future ChatGPT feature. Session Guard does not lower the floor to 1 or 2.
 
 When **Older history = Manual only**, validated cursor-page responses are prevented from automatically feeding old message payloads back into the browser working set. Unknown response schemas fail open unchanged.
 
@@ -107,15 +136,15 @@ ChatGPT controls the raw pagination shape, so the batch is a browser history tar
 ## Modes
 
 - **Safe** — keeps old DOM attached with `content-visibility`.
-- **Balanced** — current recommended default; hides old settled turn roots without deleting descendants.
-- **Ultra Lite** — Balanced engine + very small history target + manual older history.
-- **Aggressive · Experimental** — removes old settled descendants. Real benchmark currently shows a regression, so it is not recommended as default.
+- **Balanced** — conservative default; hides old settled turn roots without deleting descendants.
+- **Ultra Lite** — Balanced engine + very small history target + manual older history; recommended for maximum performance in the tested workload.
+- **Aggressive · Experimental** — removes old settled descendants. The real benchmark showed a regression, so it is not recommended as default.
 
 Hard Switch / Session GC remains off by default.
 
 ## Automatic real-browser validation
 
-The debug build now has benchmark profiles:
+The debug build has benchmark profiles:
 
 ### Standard Validation
 
@@ -143,7 +172,7 @@ Run this on one existing long conversation. It automatically reloads and samples
 
 It records visible messages/rounds, active/conversation/document DOM, JS heap, Long Tasks, a lightweight scroll-work proxy, input-latency proxy, DOM-budget limiting, and Network Guard turns. It does not create new messages or read/store chat text.
 
-See [`docs/automatic-real-browser-benchmark.md`](docs/automatic-real-browser-benchmark.md).
+See [`docs/automatic-real-browser-benchmark.md`](docs/automatic-real-browser-benchmark.md) and [`docs/real-browser-benchmark.md`](docs/real-browser-benchmark.md).
 
 ## Privacy and permissions
 
@@ -190,6 +219,17 @@ Both write the unpacked extension to `dist/`. The benchmark UI is debug-only; hi
 
 ## v0.1 validation status
 
-The previous real benchmark proves that the original Balanced 8-round configuration can avoid the Control heap growth observed in that workload. It does **not** yet prove that Ultra Lite, 1 round, or 1 message is lighter or more stable.
+v0.1.0 has passed the tested release gates:
 
-The feature branch must not be merged to `main` until a new logged-in real-browser Standard Validation and Long Conversation Stress run confirm that Ultra Lite provides a measurable benefit without breaking Tool/Thinking/confirmation/streaming behavior.
+- real logged-in Chrome Standard Validation: **proven improvement**
+- real Long Conversation Stress: 1 round and 1 message both reduced the active DOM working set
+- Ultra Lite · 1 round core Compatibility Smoke: **PASS**
+- automatic unit/regression tests, TypeScript strict, ESLint, production/debug builds, npm audit, and production-bundle audit: **PASS**
+
+Known limitations remain:
+
+- renderer-process memory was not directly collected; JS heap is the primary browser-side memory proxy used by the automatic benchmark;
+- Confirmation / Permission and Branch Conversation were not reliably reproduced in the final manual smoke;
+- ChatGPT internal endpoints and DOM are private implementation details and may change;
+- unknown or malformed recognized history schemas fail open rather than being force-modified;
+- results apply to the tested workload and are not a guarantee of future ChatGPT behavior, lower total RAM usage, or elimination of crashes.

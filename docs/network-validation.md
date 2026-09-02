@@ -9,11 +9,11 @@ GET /backend-api/conversations/{conversationId}?include_has_versions=true&num_tu
 GET /backend-api/conversations/{conversationId}/messages?before={cursor}&...
 ```
 
-The first real benchmark verified that the previous Balanced configuration changed the initial request from `10` to `8` without breaking the benchmark workload.
+The original Balanced benchmark verified `10 → 8`. The final v0.1.0 Ultra Lite validation also exercised `10 → 4` successfully in a real logged-in Chrome workload.
 
 ## History-target mapping
 
-The v2 History rendering configuration now drives Network Guard.
+The v2 History rendering configuration drives Network Guard.
 
 Session Guard only lowers an already-present valid `num_turns` and never increases ChatGPT's request.
 
@@ -33,7 +33,20 @@ When ChatGPT requests `num_turns=10`:
 | 1 round | 4 |
 | 1 message | 4 |
 
-The `4` floor is an engineering safety boundary, not a claim that ChatGPT officially documents `num_turns=4` as universally safe. `num_turns=1/2/4` have not all been verified in a logged-in Tool/Thinking/Branch compatibility matrix.
+The `4` floor remains an engineering safety boundary, not a claim that ChatGPT officially documents `num_turns=4` as universally safe.
+
+The real v0.1.0 Ultra Lite benchmark and compatibility smoke exercised `10 → 4` successfully with:
+
+- ordinary message streaming
+- Thinking
+- Web Search
+- file upload
+- image upload / vision
+- conversation switching
+
+This supports the tested workflows. It does not prove every private ChatGPT feature or future API version is compatible with `num_turns=4`.
+
+Session Guard intentionally does **not** lower the network floor to 1 or 2 in v0.1.0.
 
 ## Automatic older-history suppression
 
@@ -62,6 +75,8 @@ If the response schema is unknown or malformed, Session Guard returns the origin
 If the user explicitly chooses **Load previous N**, a matching current-conversation expansion is stored in `chrome.storage.session`, the page reloads, and older history is allowed for that user-initiated session. The raw ChatGPT pagination page may contain a different number of internal nodes than the visible batch target; Session Guard does not destructively slice unknown Tool/Thinking dependencies just to force an exact raw-node count.
 
 Temporary Full History bypasses both initial history limiting and older-page suppression.
+
+The final manual smoke confirmed Load Previous 10, Temporary Full History, Restore Lightweight Mode, and conversation-local expansion isolation in a real logged-in session.
 
 ## Legacy fallback
 
@@ -106,6 +121,13 @@ Automated request/schema tests cover:
 - Request headers/credentials preservation
 - malformed/unknown schema fail-open
 
-A new logged-in real run is still required to confirm `10 → 4` with current Tool/Thinking/confirmation/branch behavior. Until then, the new lower network target is **implemented but not proven compatible in every real workflow**.
+Real logged-in Chrome validation has now exercised the v0.1.0 `10 → 4` path in the tested core workflows without a known blocker.
+
+Still not claimed as manually reproduced in the final smoke:
+
+- Confirmation / Permission UI
+- Branch Conversation
+
+Those limitations do not change the fail-open design: unknown or malformed recognized history schemas are returned unchanged.
 
 No benchmark/network validation result contains conversation text.
