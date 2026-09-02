@@ -22,7 +22,7 @@ const common = {
   bundle: true,
   minify: false,
   minifySyntax: true,
-  sourcemap: true,
+  sourcemap: debugBuild,
   target: 'chrome120',
   platform: 'browser',
   logLevel: 'info',
