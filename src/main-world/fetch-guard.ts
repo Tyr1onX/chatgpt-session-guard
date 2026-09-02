@@ -1,9 +1,12 @@
 import { normalizeConfig, type GuardConfig } from '../shared/config';
 import { EVENTS, dispatchStringEvent, parseStringEvent, type NetworkStatus } from '../shared/events';
+import { installDebugHelper } from './debug-helper';
 import { trimLegacyConversation } from './legacy-adapter';
 import { adaptPaginatedConversation, rewritePaginatedRequest } from './paginated-adapter';
 import { classifyRequest } from './request-classifier';
 import { detectConversationSchema } from './schema-validator';
+
+declare const __CSG_DEBUG_BUILD__: boolean;
 
 declare global {
   interface Window {
@@ -171,6 +174,7 @@ function patchFetch(): void {
 }
 
 (function init(): void {
+  if (__CSG_DEBUG_BUILD__) installDebugHelper();
   setupConfigBridge();
   setupNavigationBridge();
   patchFetch();

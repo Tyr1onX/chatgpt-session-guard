@@ -23,6 +23,10 @@ export function buildMetrics(params: {
   cleanupCount: number;
   hardSwitchCount: number;
   networkMode: NetworkMode;
+  networkModified: boolean;
+  networkRequestedTurns: number | null;
+  networkEffectiveTurns: number | null;
+  switchLatencyMs: number | null;
   dom: DomWindowStats;
 }): DebugMetrics {
   return {
@@ -34,8 +38,12 @@ export function buildMetrics(params: {
     activeConversationDomNodes: params.dom.activeConversationDomNodes,
     totalDocumentDomNodes: countDocumentNodes(),
     networkMode: params.networkMode,
+    networkModified: params.networkModified,
+    networkRequestedTurns: params.networkRequestedTurns,
+    networkEffectiveTurns: params.networkEffectiveTurns,
     cleanupCount: params.cleanupCount,
     hardSwitchCount: params.hardSwitchCount,
+    switchLatencyMs: params.switchLatencyMs,
     jsHeapMb: readJsHeapMb(),
     lastUpdatedAt: Date.now()
   };

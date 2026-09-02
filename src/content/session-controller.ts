@@ -20,6 +20,7 @@ export class SessionController {
   private readonly domWindow = new DomRollingWindow();
   private readonly hardSwitch = new HardSwitchGuard();
   private readonly navigation: NavigationObserver;
+  private readonly onMetrics: ((metrics: DebugMetrics) => void) | undefined;
   private globalAbort: AbortController | null = null;
   private scopeObserver: MutationObserver | null = null;
   private scopeTimer: number | null = null;
@@ -28,10 +29,16 @@ export class SessionController {
   private spaSwitchCount = 0;
   private cleanupCount = 0;
   private networkMode: NetworkMode = 'unknown';
+  private networkModified = false;
+  private networkRequestedTurns: number | null = null;
+  private networkEffectiveTurns: number | null = null;
+  private pendingNavigationStartedAt: number | null = null;
+  private lastSwitchLatencyMs: number | null = null;
   private metrics: DebugMetrics = { ...EMPTY_METRICS };
 
-  constructor(config: GuardConfig) {
+  constructor(config: GuardConfig, onMetrics?: (metrics: DebugMetrics) => void) {
     this.config = config;
+    this.onMetrics = onMetrics;
     this.navigation = new NavigationObserver((conversationId) => this.onNavigation(conversationId));
   }
 
@@ -42,6 +49,9 @@ export class SessionController {
       const status = parseStringEvent<NetworkStatus>(event);
       if (!status) return;
       this.networkMode = status.mode;
+      this.networkModified = status.modified;
+      this.networkRequestedTurns = status.requestedTurns ?? null;
+      this.networkEffectiveTurns = status.effectiveTurns ?? null;
       this.scheduleEvaluate();
     }, { signal: this.globalAbort.signal });
     this.navigation.start();
@@ -64,20 +74,27 @@ export class SessionController {
   }
 
   private onNavigation(conversationId: string | null): void {
+    this.pendingNavigationStartedAt = performance.now();
     if (this.hasInitialNavigation) this.spaSwitchCount += 1;
     this.hasInitialNavigation = true;
     this.cleanupScope();
     this.currentConversationId = conversationId;
 
     if (!conversationId) {
+      this.lastSwitchLatencyMs = this.consumeSwitchLatency();
       this.metrics = buildMetrics({
         conversationId: null,
         spaSwitchCount: this.spaSwitchCount,
         cleanupCount: this.cleanupCount,
         hardSwitchCount: this.hardSwitch.countPerformed,
         networkMode: this.networkMode,
+        networkModified: this.networkModified,
+        networkRequestedTurns: this.networkRequestedTurns,
+        networkEffectiveTurns: this.networkEffectiveTurns,
+        switchLatencyMs: this.lastSwitchLatencyMs,
         dom: EMPTY_DOM
       });
+      this.publishMetrics();
       return;
     }
 
@@ -96,20 +113,38 @@ export class SessionController {
 
   private evaluate(): void {
     const dom = this.domWindow.apply(this.config);
+    const switchLatency = this.consumeSwitchLatency();
+    if (switchLatency !== null) this.lastSwitchLatencyMs = switchLatency;
     this.metrics = buildMetrics({
       conversationId: this.currentConversationId,
       spaSwitchCount: this.spaSwitchCount,
       cleanupCount: this.cleanupCount,
       hardSwitchCount: this.hardSwitch.countPerformed,
       networkMode: this.networkMode,
+      networkModified: this.networkModified,
+      networkRequestedTurns: this.networkRequestedTurns,
+      networkEffectiveTurns: this.networkEffectiveTurns,
+      switchLatencyMs: this.lastSwitchLatencyMs,
       dom
     });
+    this.publishMetrics();
     this.hardSwitch.observe(this.metrics);
 
     if (this.hardSwitch.shouldHardReload(this.config, this.metrics)) {
       this.hardSwitch.markHardReload(this.spaSwitchCount);
       location.replace(location.href);
     }
+  }
+
+  private consumeSwitchLatency(): number | null {
+    if (this.pendingNavigationStartedAt === null) return null;
+    const latency = Math.round((performance.now() - this.pendingNavigationStartedAt) * 10) / 10;
+    this.pendingNavigationStartedAt = null;
+    return latency;
+  }
+
+  private publishMetrics(): void {
+    this.onMetrics?.({ ...this.metrics });
   }
 
   private cleanupScope(): void {

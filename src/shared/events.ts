@@ -2,7 +2,9 @@ export const EVENTS = {
   config: 'csg:config',
   requestConfig: 'csg:request-config',
   navigation: 'csg:navigation',
-  networkStatus: 'csg:network-status'
+  networkStatus: 'csg:network-status',
+  debugMetrics: 'csg:debug-metrics',
+  debugCommand: 'csg:debug-command'
 } as const;
 
 export type NetworkMode = 'legacy' | 'paginated' | 'unknown' | 'disabled';
@@ -14,6 +16,11 @@ export interface NetworkStatus {
   keptRounds?: number;
   requestedTurns?: number;
   effectiveTurns?: number;
+}
+
+export interface DebugCommand {
+  type: 'set-hard-switch';
+  enabled: boolean;
 }
 
 export function dispatchStringEvent(name: string, value: unknown): void {

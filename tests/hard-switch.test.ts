@@ -13,8 +13,12 @@ function metrics(overrides: Partial<DebugMetrics> = {}): DebugMetrics {
     activeConversationDomNodes: 5000,
     totalDocumentDomNodes: 20000,
     networkMode: 'legacy',
+    networkModified: false,
+    networkRequestedTurns: null,
+    networkEffectiveTurns: null,
     cleanupCount: 30,
     hardSwitchCount: 0,
+    switchLatencyMs: null,
     jsHeapMb: 900,
     lastUpdatedAt: Date.now(),
     ...overrides

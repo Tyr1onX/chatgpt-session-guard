@@ -4,6 +4,7 @@ import path from 'node:path';
 
 const root = process.cwd();
 const dist = path.join(root, 'dist');
+const debugBuild = process.argv.includes('--debug');
 
 await rm(dist, { recursive: true, force: true });
 await mkdir(dist, { recursive: true });
@@ -14,7 +15,10 @@ const common = {
   sourcemap: true,
   target: 'chrome120',
   platform: 'browser',
-  logLevel: 'info'
+  logLevel: 'info',
+  define: {
+    __CSG_DEBUG_BUILD__: debugBuild ? 'true' : 'false'
+  }
 };
 
 await Promise.all([
@@ -26,3 +30,5 @@ await Promise.all([
 for (const file of ['manifest.json', 'popup.html', 'popup.css']) {
   await cp(path.join(root, 'extension', file), path.join(dist, file));
 }
+
+console.log(`Built ChatGPT Session Guard (${debugBuild ? 'debug' : 'production'}) into dist/`);
