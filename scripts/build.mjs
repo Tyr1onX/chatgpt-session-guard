@@ -33,7 +33,7 @@ const common = {
 };
 
 await Promise.all([
-  build({ ...common, entryPoints: ['src/main-world/fetch-guard.ts'], outfile: 'dist/main-world.js', format: 'iife' }),
+  build({ ...common, entryPoints: ['src/main-world/bootstrap.ts'], outfile: 'dist/main-world.js', format: 'iife' }),
   build({ ...common, entryPoints: ['src/content/index.ts'], outfile: 'dist/content.js', format: 'iife' }),
   build({ ...common, entryPoints: ['src/popup/popup.ts'], outfile: 'dist/popup.js', format: 'iife' }),
   build({ ...common, entryPoints: ['src/background/index.ts'], outfile: 'dist/background.js', format: 'iife' })
