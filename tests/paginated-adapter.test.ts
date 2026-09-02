@@ -54,13 +54,15 @@ describe('paginated conversation adapter', () => {
     expect(rewritePaginatedRequest(classifyRequest(other), config, [other]).effectiveTurns).toBe(4);
   });
 
-  it('recognizes only the exact known older-page query shape', () => {
+  it('recognizes before-cursor older pages even when ChatGPT adds query flags', () => {
     const known = classifyRequest(`${location.origin}/backend-api/conversations/abc/messages?before=cursor&include_has_versions=true&num_turns=100`);
-    const unknownQuery = classifyRequest(`${location.origin}/backend-api/conversations/abc/messages?before=cursor&future_flag=1`);
+    const queryDrift = classifyRequest(`${location.origin}/backend-api/conversations/abc/messages?before=cursor&future_flag=1`);
     const missingCursor = classifyRequest(`${location.origin}/backend-api/conversations/abc/messages?num_turns=100`);
+    const conflictingDirection = classifyRequest(`${location.origin}/backend-api/conversations/abc/messages?before=cursor&after=newer`);
     expect(isKnownOlderPageRequestShape(known)).toBe(true);
-    expect(isKnownOlderPageRequestShape(unknownQuery)).toBe(false);
+    expect(isKnownOlderPageRequestShape(queryDrift)).toBe(true);
     expect(isKnownOlderPageRequestShape(missingCursor)).toBe(false);
+    expect(isKnownOlderPageRequestShape(conflictingDirection)).toBe(false);
   });
 
   it('preflight suppresses known manual-only older pages', () => {
@@ -82,10 +84,10 @@ describe('paginated conversation adapter', () => {
     expect(shouldPreflightSuppressOlderHistory(classifyRequest(page), normalizeConfig({ ...DEFAULT_CONFIG, autoLoadHistory: true }))).toBe(false);
   });
 
-  it('fails open for unknown older-page query shapes', () => {
+  it('preflight suppresses older-page requests after harmless query-shape drift', () => {
     const page = `${location.origin}/backend-api/conversations/abc/messages?before=cursor&new_internal_flag=1`;
-    expect(shouldPreflightSuppressOlderHistory(classifyRequest(page), DEFAULT_CONFIG)).toBe(false);
-    expect(shouldSuppressOlderHistory(classifyRequest(page), DEFAULT_CONFIG)).toBe(false);
+    expect(shouldPreflightSuppressOlderHistory(classifyRequest(page), DEFAULT_CONFIG)).toBe(true);
+    expect(shouldSuppressOlderHistory(classifyRequest(page), DEFAULT_CONFIG)).toBe(true);
   });
 
   it('builds a synthetic empty page that passes the same strict schema validator', () => {
