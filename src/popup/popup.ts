@@ -210,6 +210,9 @@ function setupBenchmarkUi(): void {
   const longStressDownloads = element<HTMLElement>('longStressDownloads');
   const longStressJson = element<HTMLButtonElement>('longStressJson');
   const longStressReportButton = element<HTMLButtonElement>('longStressReport');
+  const stabilityTraceMessage = element<HTMLElement>('stabilityTraceMessage');
+  const stabilityTraceJson = element<HTMLButtonElement>('stabilityTraceJson');
+  const stabilityTraceReportButton = element<HTMLButtonElement>('stabilityTraceReport');
   let latestLongStress: LongStressState | null = null;
   let latestState: BenchmarkState | null = null;
 
@@ -321,6 +324,20 @@ function setupBenchmarkUi(): void {
     if (!latestLongStress) return;
     const timestamp = latestLongStress.completedAt ?? Date.now();
     downloadText(longStressFilename('long-stress-report', timestamp, 'md'), longStressReport(latestLongStress), 'text/markdown;charset=utf-8');
+  });
+  stabilityTraceJson.addEventListener('click', async () => {
+    const response = await sendToActiveTab({ type: 'csg:stability-trace-get' });
+    if (!response?.stabilityTrace) { stabilityTraceMessage.textContent = 'No Stability Trace is available on this tab.'; return; }
+    const snapshot = response.stabilityTrace as { flappingDetected?: boolean };
+    stabilityTraceMessage.textContent = snapshot.flappingDetected ? 'WINDOW_FLAPPING_DETECTED · trace exported.' : 'Stability Trace exported.';
+    downloadText('stability-trace-' + Date.now() + '.json', JSON.stringify(response.stabilityTrace, null, 2), 'application/json;charset=utf-8');
+  });
+  stabilityTraceReportButton.addEventListener('click', async () => {
+    const response = await sendToActiveTab({ type: 'csg:stability-trace-get' });
+    if (!response?.stabilityReport) { stabilityTraceMessage.textContent = 'No Stability Trace report is available on this tab.'; return; }
+    const snapshot = response.stabilityTrace as { flappingDetected?: boolean } | undefined;
+    stabilityTraceMessage.textContent = snapshot?.flappingDetected ? 'WINDOW_FLAPPING_DETECTED · report exported.' : 'Stability report exported.';
+    downloadText('stability-report-' + Date.now() + '.md', response.stabilityReport, 'text/markdown;charset=utf-8');
   });
 
   void refresh();

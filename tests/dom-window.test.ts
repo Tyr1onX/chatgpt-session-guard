@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { DEFAULT_CONFIG, normalizeConfig } from '../src/shared/config';
-import { DomRollingWindow, findTurnElements } from '../src/content/dom-window';
+import {
+  DomRollingWindow,
+  buildDomRounds,
+  findTurnElements,
+  mutationNeedsConversationEvaluate
+} from '../src/content/dom-window';
 
 function addRound(index: number, childCount = 4): void {
   for (const role of ['user', 'assistant'] as const) {
@@ -28,6 +33,7 @@ function populate(rounds = 20): void {
 describe('DOM rolling window', () => {
   beforeEach(() => {
     document.head.querySelector('#csg-window-styles')?.remove();
+    document.documentElement.querySelector('#csg-window-styles')?.remove();
     document.body.replaceChildren();
     populate();
   });
@@ -64,7 +70,7 @@ describe('DOM rolling window', () => {
     expect(kept[0]?.querySelector('[data-testid="thinking-block"]')).not.toBeNull();
   });
 
-  it('1-message mode expands to the current safety round while streaming', () => {
+  it('1-message mode pins to the current whole round while streaming', () => {
     const stop = document.createElement('button');
     stop.dataset.testid = 'stop-button';
     stop.style.position = 'fixed';
@@ -73,6 +79,8 @@ describe('DOM rolling window', () => {
     const stats = guard.apply(normalizeConfig({ ...DEFAULT_CONFIG, mode: 'ultra-lite', historyUnit: 'message', historyCount: 1 }));
     expect(stats.renderedMessages).toBeGreaterThanOrEqual(2);
     expect(stats.renderedRounds).toBe(1);
+    expect(stats.generationActive).toBe(true);
+    expect(stats.boundaryIndex).toBe(stats.lastVisibleUserIndex);
   });
 
   it('temporary manual expansion increases only the matching conversation working set', () => {
@@ -104,7 +112,7 @@ describe('DOM rolling window', () => {
     expect(protectedTurn?.dataset.csgPruned).not.toBe('true');
   });
 
-  it('cleanup removes recoverable Safe/Balanced presentation state', () => {
+  it('cleanup restores recoverable Safe/Balanced presentation state when explicitly requested', () => {
     const guard = new DomRollingWindow();
     guard.apply(normalizeConfig({ ...DEFAULT_CONFIG, mode: 'balanced', historyUnit: 'round', historyCount: 4, domBudget: 1000 }));
     expect(document.querySelectorAll('.csg-balanced-hidden').length).toBeGreaterThan(0);
@@ -112,6 +120,19 @@ describe('DOM rolling window', () => {
     expect(document.querySelectorAll('.csg-balanced-hidden').length).toBe(0);
     expect(document.getElementById('csg-history-placeholder')).toBeNull();
   });
+
+  it('navigation cleanup does not flash the full hidden conversation', () => {
+    const guard = new DomRollingWindow();
+    guard.apply(normalizeConfig({ ...DEFAULT_CONFIG, mode: 'ultra-lite', historyUnit: 'round', historyCount: 1 }));
+    const hiddenBefore = document.querySelectorAll('.csg-balanced-hidden').length;
+    expect(hiddenBefore).toBeGreaterThan(0);
+    guard.cleanupForNavigation();
+    expect(document.querySelectorAll('.csg-balanced-hidden')).toHaveLength(hiddenBefore);
+    expect(document.getElementById('csg-history-placeholder')).toBeNull();
+    guard.restoreAllVisualState();
+    expect(document.querySelectorAll('.csg-balanced-hidden')).toHaveLength(0);
+  });
+
   it('keeps the existing Balanced default at 8 configured rounds when budget allows', () => {
     const guard = new DomRollingWindow();
     const stats = guard.apply(DEFAULT_CONFIG);
@@ -138,6 +159,109 @@ describe('DOM rolling window', () => {
     expect(stats.renderedRounds).toBe(1);
     expect(stats.renderedMessages).toBe(2);
     expect(stats.limitedByDomBudget).toBe(false);
+  });
+
+  it('uses visible user turns as the only round boundaries', () => {
+    document.body.replaceChildren();
+    const make = (role: 'user' | 'assistant' | 'unknown', id: string): void => {
+      const turn = document.createElement('article');
+      turn.setAttribute('data-testid', `conversation-turn-${id}`);
+      if (role !== 'unknown') {
+        const body = document.createElement('div');
+        body.setAttribute('data-message-author-role', role);
+        turn.appendChild(body);
+      }
+      document.body.appendChild(turn);
+    };
+    make('user', 'u1');
+    make('unknown', 'thinking');
+    make('unknown', 'tool');
+    make('assistant', 'a1');
+    make('unknown', 'citation');
+    make('user', 'u2');
+    make('assistant', 'a2');
+    const rounds = buildDomRounds(findTurnElements());
+    expect(rounds).toHaveLength(2);
+    expect(rounds[0]?.turns).toHaveLength(5);
+    expect(rounds[1]?.turns).toHaveLength(2);
+  });
+
+  it('keeps placeholder structure idempotent when its state is unchanged', () => {
+    const guard = new DomRollingWindow();
+    const cfg = normalizeConfig({ ...DEFAULT_CONFIG, mode: 'ultra-lite', historyUnit: 'round', historyCount: 1 });
+    guard.apply(cfg);
+    const placeholder = document.getElementById('csg-history-placeholder');
+    const title = placeholder?.querySelector('.csg-history-title');
+    const load = placeholder?.querySelector('[data-csg-action="load-previous"]');
+    guard.apply(cfg);
+    expect(document.getElementById('csg-history-placeholder')).toBe(placeholder);
+    expect(placeholder?.querySelector('.csg-history-title')).toBe(title);
+    expect(placeholder?.querySelector('[data-csg-action="load-previous"]')).toBe(load);
+  });
+
+  it('ignores extension-owned and ordinary streaming subtree mutations but reacts to topology changes', async () => {
+    const guard = new DomRollingWindow();
+    guard.apply(normalizeConfig({ ...DEFAULT_CONFIG, mode: 'ultra-lite', historyUnit: 'round', historyCount: 1 }));
+    const placeholder = document.getElementById('csg-history-placeholder');
+    const records: MutationRecord[] = [];
+    const observer = new MutationObserver((next) => records.push(...next));
+    observer.observe(document.body, { childList: true, subtree: true });
+
+    placeholder?.querySelector('.csg-history-title')?.appendChild(document.createElement('span'));
+    const activeTurn = findTurnElements().at(-1);
+    activeTurn?.querySelector('[data-message-author-role]')?.appendChild(document.createElement('span'));
+    const newTurn = document.createElement('article');
+    newTurn.setAttribute('data-testid', 'conversation-turn-new');
+    document.body.appendChild(newTurn);
+    await Promise.resolve();
+    observer.disconnect();
+
+    const owned = records.filter((record) => (record.target as Element).closest?.('#csg-history-placeholder'));
+    const streaming = records.filter((record) => (record.target as Element).closest?.('[data-testid^="conversation-turn-"]'));
+    const topology = records.filter((record) => [...record.addedNodes].includes(newTurn));
+    expect(mutationNeedsConversationEvaluate(owned)).toBe(false);
+    expect(mutationNeedsConversationEvaluate(streaming)).toBe(false);
+    expect(mutationNeedsConversationEvaluate(topology)).toBe(true);
+  });
+  it('keeps user-boundary semantics stable for 100 / 300 / 500 mixed tool-heavy rounds', () => {
+    for (const roundCount of [100, 300, 500]) {
+      document.body.replaceChildren();
+      for (let index = 0; index < roundCount; index += 1) {
+        const make = (role: 'user' | 'assistant' | 'unknown', suffix: string): void => {
+          const turn = document.createElement('article');
+          turn.setAttribute('data-testid', 'conversation-turn-' + index + '-' + suffix);
+          if (role !== 'unknown') { const body = document.createElement('div'); body.setAttribute('data-message-author-role', role); turn.appendChild(body); }
+          else { const tool = document.createElement('div'); tool.dataset.testid = suffix; tool.appendChild(document.createElement('span')); turn.appendChild(tool); }
+          document.body.appendChild(turn);
+        };
+        make('user', 'user'); make('unknown', 'thinking'); make('unknown', 'tool'); make('assistant', 'assistant'); make('unknown', 'citation');
+      }
+      const guard = new DomRollingWindow();
+      const stats = guard.apply(normalizeConfig({ ...DEFAULT_CONFIG, mode: 'ultra-lite', historyUnit: 'round', historyCount: 1 }));
+      expect(stats.totalRounds).toBe(roundCount);
+      expect(stats.renderedRounds).toBe(1);
+      expect(stats.boundaryIndex).toBe((roundCount - 1) * 5);
+    }
+  });
+
+  it('pins the active 1-round boundary while tool/thinking top-level nodes mount and replace during generation', () => {
+    document.body.replaceChildren();
+    addRound(0); addRound(1);
+    const stop = document.createElement('button'); stop.dataset.testid = 'stop-button'; stop.style.position = 'fixed'; document.body.appendChild(stop);
+    const guard = new DomRollingWindow();
+    const cfg = normalizeConfig({ ...DEFAULT_CONFIG, mode: 'ultra-lite', historyUnit: 'round', historyCount: 1 });
+    const first = guard.apply(cfg);
+    const boundary = first.boundaryTurnId;
+    const assistant = findTurnElements().at(-1);
+    const tool = document.createElement('article'); tool.setAttribute('data-testid', 'conversation-turn-active-tool'); tool.appendChild(document.createElement('div')); assistant?.after(tool);
+    const second = guard.apply(cfg);
+    const replacement = document.createElement('article'); replacement.setAttribute('data-testid', 'conversation-turn-active-tool-replaced'); replacement.appendChild(document.createElement('div')); tool.replaceWith(replacement);
+    const third = guard.apply(cfg);
+    expect(first.generationActive).toBe(true);
+    expect(second.boundaryTurnId).toBe(boundary);
+    expect(third.boundaryTurnId).toBe(boundary);
+    expect(second.renderedRounds).toBe(1);
+    expect(third.renderedRounds).toBe(1);
   });
 
 });

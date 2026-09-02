@@ -9,13 +9,24 @@ describe('SPA route detection', () => {
     expect(extractConversationId('/')).toBeNull();
   });
 
-  it('does not duplicate listeners when started twice and removes them on destroy', () => {
+  it('does not duplicate listeners and only treats conversation identity changes as full navigation', () => {
     history.replaceState(null, '', '/c/a');
     const seen: Array<string | null> = [];
-    const observer = new NavigationObserver((id) => seen.push(id));
+    const same: string[] = [];
+    const observer = new NavigationObserver((id) => seen.push(id), (id) => same.push(id));
     observer.start();
     observer.start();
     expect(seen).toEqual(['a']);
+
+    history.replaceState(null, '', '/c/a?model=auto');
+    window.dispatchEvent(new Event(EVENTS.navigation));
+    expect(seen).toEqual(['a']);
+    expect(same).toEqual(['a']);
+
+    history.replaceState(null, '', '/c/a#metadata');
+    window.dispatchEvent(new Event(EVENTS.navigation));
+    expect(seen).toEqual(['a']);
+    expect(same).toEqual(['a', 'a']);
 
     history.replaceState(null, '', '/c/b');
     window.dispatchEvent(new Event(EVENTS.navigation));

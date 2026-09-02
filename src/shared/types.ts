@@ -61,7 +61,8 @@ export type PopupRequest =
   | { type: 'csg:temporary-full-history' }
   | { type: 'csg:restore-lightweight' }
   | { type: 'csg:long-stress-start' }
-  | { type: 'csg:long-stress-stop' };
+  | { type: 'csg:long-stress-stop' }
+  | { type: 'csg:stability-trace-get' };
 
 export interface PopupResponse {
   metrics?: DebugMetrics;
@@ -69,4 +70,6 @@ export interface PopupResponse {
   longStress?: LongStressState | null;
   ok?: boolean;
   error?: string;
+  stabilityTrace?: unknown;
+  stabilityReport?: string | null;
 }

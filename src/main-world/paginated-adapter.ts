@@ -14,6 +14,8 @@ export interface PaginatedAdaptResult {
   modified: false;
 }
 
+const KNOWN_OLDER_PAGE_QUERY_KEYS = new Set(['before', 'include_has_versions', 'num_turns']);
+
 function rewriteInputUrl(input: RequestInfo | URL, url: URL): RequestInfo | URL {
   if (input instanceof Request) return new Request(url.toString(), input);
   if (input instanceof URL) return url;
@@ -25,17 +27,6 @@ function conversationIdFromUrl(url: URL): string | null {
   return match?.[1] ? decodeURIComponent(match[1]) : null;
 }
 
-/**
- * Current ChatGPT Web requests the newest page from
- * /backend-api/conversations/{id}?num_turns=N and older pages from
- * /backend-api/conversations/{id}/messages?before=<cursor>.
- *
- * We only lower an already-present, valid num_turns on the initial-page request.
- * The target follows the user's visible history setting but never goes below
- * MIN_SAFE_NETWORK_TURNS until low-value semantics are proven safe in real
- * tool/thinking/branch conversations. We never synthesize cursors or increase
- * what ChatGPT asked for. Unknown query shapes fail open unchanged.
- */
 export function rewritePaginatedRequest(
   classification: ClassifiedRequest,
   config: GuardConfig,
@@ -73,18 +64,45 @@ export function rewritePaginatedRequest(
   };
 }
 
+export function isKnownOlderPageRequestShape(classification: ClassifiedRequest): boolean {
+  if (classification.method !== 'GET' || classification.kind !== 'paginated-conversation-page') return false;
+  const before = classification.url.searchParams.get('before');
+  if (!before) return false;
+  for (const key of classification.url.searchParams.keys()) {
+    if (!KNOWN_OLDER_PAGE_QUERY_KEYS.has(key)) return false;
+  }
+  const numTurns = classification.url.searchParams.get('num_turns');
+  if (numTurns !== null && (!/^\d+$/.test(numTurns) || Number(numTurns) < 1 || Number(numTurns) > 100)) return false;
+  return true;
+}
 
 export function shouldSuppressOlderHistory(classification: ClassifiedRequest, config: GuardConfig): boolean {
-  if (classification.kind !== 'paginated-conversation-page') return false;
+  if (!isKnownOlderPageRequestShape(classification)) return false;
   if (config.autoLoadHistory || config.temporaryFullHistory) return false;
-  const match = classification.url.pathname.match(/^\/backend-api\/conversations\/([^/]+)\/messages$/);
-  const conversationId = match?.[1] ? decodeURIComponent(match[1]) : null;
+  const conversationId = classification.conversationId;
   const manualExpansionActive = Boolean(
     conversationId &&
     config.historyExpansionConversationId === conversationId &&
     config.historyExpansion > 0
   );
   return !manualExpansionActive;
+}
+
+export function shouldPreflightSuppressOlderHistory(classification: ClassifiedRequest, config: GuardConfig): boolean {
+  return shouldSuppressOlderHistory(classification, config);
+}
+
+/** Canonical empty envelope matching the validated paginated response schema. */
+export function syntheticEmptyOlderHistoryPage(): PaginatedConversationData {
+  return {
+    messages: [],
+    page_info: {
+      start_cursor: null,
+      end_cursor: null,
+      has_previous_page: false,
+      has_next_page: false
+    }
+  };
 }
 
 export function suppressOlderHistoryPage(data: PaginatedConversationData): PaginatedConversationData {
@@ -98,7 +116,6 @@ export function suppressOlderHistoryPage(data: PaginatedConversationData): Pagin
   };
 }
 
-/** The paginated response is validated but otherwise left intact. */
 export function adaptPaginatedConversation(data: PaginatedConversationData): PaginatedAdaptResult {
   return { data, modified: false };
 }

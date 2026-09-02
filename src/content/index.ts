@@ -14,6 +14,8 @@ import { hasUnsafeInteractiveState } from './hard-switch';
 import { LongConversationStressRunner } from './long-stress-runner';
 import { extractConversationId } from './navigation-observer';
 import { SessionController } from './session-controller';
+import { StabilityTraceCollector, stabilityTraceReport } from './stability-trace';
+import type { NetworkTraceEvent } from '../main-world/fetch-guard';
 
 declare const __CSG_DEBUG_BUILD__: boolean;
 
@@ -23,6 +25,8 @@ let controller: SessionController | null = null;
 let benchmarkRunner: AutomaticBenchmarkRunner | null = null;
 let benchmarkUi: BenchmarkStatusUi | null = null;
 let longStressRunner: LongConversationStressRunner | null = null;
+const stabilityTrace = __CSG_DEBUG_BUILD__ ? new StabilityTraceCollector() : null;
+const STABILITY_NETWORK_TRACE_EVENT = 'csg:stability-network-trace';
 
 function currentConversationId(): string | null {
   return extractConversationId(location.pathname);
@@ -112,6 +116,14 @@ function setupHistoryEvents(): void {
   });
 }
 
+function setupStabilityTrace(): void {
+  if (!__CSG_DEBUG_BUILD__ || !stabilityTrace) return;
+  window.addEventListener(STABILITY_NETWORK_TRACE_EVENT, (event) => {
+    const trace = parseStringEvent<NetworkTraceEvent>(event);
+    if (trace) stabilityTrace.addNetwork(trace);
+  });
+}
+
 function setupDebugCommands(): void {
   if (!__CSG_DEBUG_BUILD__) return;
   window.addEventListener(EVENTS.debugCommand, (event) => {
@@ -170,6 +182,16 @@ function setupRuntimeMessages(): void {
       return true;
     }
 
+    if (__CSG_DEBUG_BUILD__ && request.type === 'csg:stability-trace-get') {
+      const snapshot = stabilityTrace?.snapshot() ?? null;
+      sendResponse({
+        ok: true,
+        stabilityTrace: snapshot,
+        stabilityReport: snapshot ? stabilityTraceReport(snapshot) : null
+      });
+      return false;
+    }
+
     if (!__CSG_DEBUG_BUILD__ || !benchmarkRunner) return false;
     if (request.type === 'csg:benchmark-start') {
       const stress = longStressRunner?.getState();
@@ -220,13 +242,18 @@ function setupRuntimeMessages(): void {
 async function init(): Promise<void> {
   window.addEventListener(EVENTS.requestConfig, sendConfigToMainWorld);
   setupDebugCommands();
+  setupStabilityTrace();
   setupHistoryEvents();
 
   config = await loadConfig();
   historyExpansion = await loadHistoryExpansion();
   sendConfigToMainWorld();
 
-  controller = new SessionController(runtimeConfig(), __CSG_DEBUG_BUILD__ ? sendDebugMetrics : undefined);
+  controller = new SessionController(
+    runtimeConfig(),
+    __CSG_DEBUG_BUILD__ ? sendDebugMetrics : undefined,
+    __CSG_DEBUG_BUILD__ ? (event) => stabilityTrace?.addSession(event) : undefined
+  );
   controller.start();
   setupBenchmark();
 
