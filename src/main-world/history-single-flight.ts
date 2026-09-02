@@ -2,6 +2,17 @@ import type { GuardConfig } from '../shared/config';
 import { classifyRequest } from './request-classifier';
 
 export type HistoryConfigResolver = () => GuardConfig | null;
+export type HistoryClock = () => number;
+
+const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 1500;
+const MIN_RATE_LIMIT_COOLDOWN_MS = 500;
+const MAX_RATE_LIMIT_COOLDOWN_MS = 30_000;
+const MAX_COOLDOWN_ENTRIES = 64;
+
+interface RateLimitCooldown {
+  response: Response;
+  expiresAt: number;
+}
 
 function requestFingerprint(args: Parameters<typeof fetch>): string | null {
   const [input, init] = args;
@@ -33,15 +44,52 @@ function requestFingerprint(args: Parameters<typeof fetch>): string | null {
   });
 }
 
+function clampCooldown(value: number): number {
+  return Math.min(MAX_RATE_LIMIT_COOLDOWN_MS, Math.max(MIN_RATE_LIMIT_COOLDOWN_MS, value));
+}
+
+function rateLimitCooldownMs(response: Response, timestamp: number): number {
+  const retryAfter = response.headers.get('retry-after')?.trim();
+  if (!retryAfter) return DEFAULT_RATE_LIMIT_COOLDOWN_MS;
+
+  const seconds = Number(retryAfter);
+  if (Number.isFinite(seconds) && seconds >= 0) return clampCooldown(seconds * 1000);
+
+  const retryAt = Date.parse(retryAfter);
+  if (Number.isFinite(retryAt)) return clampCooldown(retryAt - timestamp);
+  return DEFAULT_RATE_LIMIT_COOLDOWN_MS;
+}
+
 /**
- * Coalesces only truly concurrent, transport-equivalent ChatGPT history GETs.
- * It is deliberately not a cache: the key is removed as soon as the underlying fetch settles.
+ * Coalesces truly concurrent, transport-equivalent ChatGPT history GETs. Successful responses
+ * are never cached. A real HTTP 429 is retained only for a short Retry-After-aware cooldown so
+ * staggered app retries cannot immediately hammer the same history endpoint again.
  */
 export function createHistorySingleFlightFetch(
   nativeFetch: typeof fetch,
-  resolveConfig: HistoryConfigResolver
+  resolveConfig: HistoryConfigResolver,
+  now: HistoryClock = Date.now
 ): typeof fetch {
   const inFlight = new Map<string, Promise<Response>>();
+  const rateLimitCooldowns = new Map<string, RateLimitCooldown>();
+
+  const pruneCooldowns = (timestamp: number): void => {
+    for (const [key, cooldown] of rateLimitCooldowns) {
+      if (cooldown.expiresAt <= timestamp) rateLimitCooldowns.delete(key);
+    }
+  };
+
+  const rememberRateLimit = (key: string, response: Response, timestamp: number): void => {
+    pruneCooldowns(timestamp);
+    if (rateLimitCooldowns.size >= MAX_COOLDOWN_ENTRIES && !rateLimitCooldowns.has(key)) {
+      const oldestKey = rateLimitCooldowns.keys().next().value as string | undefined;
+      if (oldestKey) rateLimitCooldowns.delete(oldestKey);
+    }
+    rateLimitCooldowns.set(key, {
+      response,
+      expiresAt: timestamp + rateLimitCooldownMs(response, timestamp)
+    });
+  };
 
   return async (...args: Parameters<typeof fetch>): Promise<Response> => {
     const config = resolveConfig();
@@ -50,13 +98,22 @@ export function createHistorySingleFlightFetch(
     const key = requestFingerprint(args);
     if (!key) return nativeFetch(...args);
 
+    const timestamp = now();
+    pruneCooldowns(timestamp);
+    const cooldown = rateLimitCooldowns.get(key);
+    if (cooldown && cooldown.expiresAt > timestamp) return cooldown.response.clone();
+
     let shared = inFlight.get(key);
     if (!shared) {
       shared = nativeFetch(...args);
       inFlight.set(key, shared);
       const owned = shared;
       void owned.then(
-        () => { if (inFlight.get(key) === owned) inFlight.delete(key); },
+        (response) => {
+          if (inFlight.get(key) === owned) inFlight.delete(key);
+          if (response.status === 429) rememberRateLimit(key, response, now());
+          else rateLimitCooldowns.delete(key);
+        },
         () => { if (inFlight.get(key) === owned) inFlight.delete(key); }
       );
     }
