@@ -1,3 +1,4 @@
+import { strToU8, zipSync } from 'fflate';
 import {
   benchmarkFilename,
   benchmarkReport,
@@ -16,9 +17,12 @@ import {
 } from '../shared/config';
 import { longStressFilename, longStressReport, type LongStressState } from '../shared/long-stress';
 import type { GuardStats } from '../shared/stats';
+import { FIELD_STORAGE_KEY, fieldIncidentReport, normalizeFieldStore, type FieldIncident } from '../shared/field-recorder';
 import type { DebugMetrics, PopupRequest, PopupResponse } from '../shared/types';
 
 declare const __CSG_DEBUG_BUILD__: boolean;
+declare const __CSG_FIELD_BUILD__: boolean;
+declare const __CSG_BUILD_ID__: string;
 
 function element<T extends HTMLElement>(id: string): T {
   const found = document.getElementById(id);
@@ -43,7 +47,7 @@ const sessionState = element<HTMLElement>('sessionState');
 const activeHistory = element<HTMLElement>('activeHistory');
 const domBudgetState = element<HTMLElement>('domBudgetState');
 const warning = element<HTMLElement>('warning');
-const metricsList = __CSG_DEBUG_BUILD__ ? element<HTMLDListElement>('metrics') : null;
+const metricsList = __CSG_DEBUG_BUILD__ && !__CSG_FIELD_BUILD__ ? element<HTMLDListElement>('metrics') : null;
 const statsSessionOpen = element<HTMLElement>('statsSessionOpen');
 const statsSingleFlight = element<HTMLElement>('statsSingleFlight');
 const statsOlderSuppressed = element<HTMLElement>('statsOlderSuppressed');
@@ -214,7 +218,8 @@ function renderStats(stats: GuardStats | null): void {
 }
 
 function downloadText(filename: string, content: string, mime: string): void {
-  const blob = new Blob([content], { type: mime });
+  const bytes = Uint8Array.from(content);
+  const blob = new Blob([bytes.buffer], { type: mime });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement('a');
   anchor.href = url;
@@ -224,6 +229,84 @@ function downloadText(filename: string, content: string, mime: string): void {
   anchor.click();
   anchor.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function downloadBytes(filename: string, content: Uint8Array, mime: string): void {
+  const buffer = new ArrayBuffer(content.byteLength);
+  new Uint8Array(buffer).set(content);
+  const blob = new Blob([buffer], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.style.display = 'none';
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function loadLatestFieldIncident(): Promise<{ count: number; incident: FieldIncident | null }> {
+  const stored = await chrome.storage.local.get(FIELD_STORAGE_KEY);
+  const store = normalizeFieldStore(stored[FIELD_STORAGE_KEY]);
+  return { count: store.incidents.length, incident: store.incidents.at(-1) ?? null };
+}
+
+function setupFieldRecorderUi(): void {
+  if (!__CSG_FIELD_BUILD__) return;
+  const status = element<HTMLElement>('fieldRecorderStatus');
+  const count = element<HTMLElement>('fieldIncidentCount');
+  const recent = element<HTMLElement>('fieldRecentIncident');
+  const build = element<HTMLElement>('fieldBuildId');
+  const exportButton = element<HTMLButtonElement>('fieldExport');
+  const resetButton = element<HTMLButtonElement>('fieldReset');
+  const message = element<HTMLElement>('fieldMessage');
+  let latest: FieldIncident | null = null;
+
+  const refresh = async (): Promise<void> => {
+    const [local, runtime] = await Promise.all([
+      loadLatestFieldIncident(),
+      sendToActiveTab({ type: 'csg:field-status' })
+    ]);
+    latest = local.incident;
+    count.textContent = String(local.count);
+    recent.textContent = latest?.incidentCodes[0] ?? '无';
+    build.textContent = runtime?.fieldStatus?.buildId ?? __CSG_BUILD_ID__;
+    status.textContent = runtime?.fieldStatus?.listening ? '监听中' : '已启用 · 当前页未连接';
+    exportButton.disabled = latest === null;
+  };
+
+  exportButton.addEventListener('click', () => {
+    if (!latest) { message.textContent = '当前还没有捕获到现场事件。'; return; }
+    const buildInfo = {
+      buildId: latest.buildId,
+      buildFlavor: 'field',
+      extensionVersion: chrome.runtime.getManifest().version,
+      exportedAt: Date.now()
+    };
+    const sanitizedTrace = {
+      schemaVersion: 1,
+      traceExcerpt: latest.traceExcerpt,
+      networkSummary: latest.networkSummary
+    };
+    const zip = zipSync({
+      'field-incident.json': strToU8(JSON.stringify(latest, null, 2)),
+      'stability-trace.json': strToU8(JSON.stringify(sanitizedTrace, null, 2)),
+      'field-report.md': strToU8(fieldIncidentReport(latest)),
+      'build-info.json': strToU8(JSON.stringify(buildInfo, null, 2))
+    }, { level: 6 });
+    downloadBytes('ChatGPT-Session-Guard-Field-Incident-' + latest.triggerTimestamp + '.zip', zip, 'application/zip');
+    message.textContent = '现场诊断已导出。';
+  });
+
+  resetButton.addEventListener('click', async () => {
+    await chrome.storage.local.remove(FIELD_STORAGE_KEY);
+    await sendToActiveTab({ type: 'csg:field-reset' });
+    message.textContent = '现场诊断已清除。';
+    await refresh();
+  });
+
+  void refresh();
 }
 
 async function loadLongStressState(): Promise<LongStressState | null> {
@@ -265,7 +348,7 @@ function benchmarkModeLabel(value: string): string {
 }
 
 function setupBenchmarkUi(): void {
-  if (!__CSG_DEBUG_BUILD__) return;
+  if (!__CSG_DEBUG_BUILD__ || __CSG_FIELD_BUILD__) return;
   const profile = element<HTMLSelectElement>('benchmarkProfile');
   const conversations = element<HTMLElement>('benchmarkConversations');
   const mode = element<HTMLElement>('benchmarkMode');
@@ -501,5 +584,6 @@ void (async () => {
   const [metrics, stats] = await Promise.all([getMetrics(), loadStats()]);
   renderMetrics(metrics);
   renderStats(stats);
+  setupFieldRecorderUi();
   setupBenchmarkUi();
 })();

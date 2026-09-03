@@ -9,6 +9,7 @@ import { EVENTS, dispatchStringEvent, parseStringEvent, type DebugCommand, type 
 import { EMPTY_METRICS, type DebugMetrics, type PopupRequest, type PopupResponse } from '../shared/types';
 import type { NetworkTraceEvent } from '../main-world/fetch-guard';
 import { AutomaticBenchmarkRunner } from './benchmark-runner';
+import { PassiveFieldRecorder } from './field-recorder';
 import { BenchmarkStatusUi } from './benchmark-ui';
 import { clearHistoryExpansion, loadHistoryExpansion, saveHistoryExpansion, type HistoryExpansionState } from './history-session';
 import { hasUnsafeInteractiveState } from './hard-switch';
@@ -19,6 +20,8 @@ import { LocalStatsBridge } from './stats-bridge';
 import { StabilityTraceCollector, stabilityTraceReport } from './stability-trace';
 
 declare const __CSG_DEBUG_BUILD__: boolean;
+declare const __CSG_FIELD_BUILD__: boolean;
+declare const __CSG_BUILD_ID__: string;
 
 let config: GuardConfig = DEFAULT_CONFIG;
 let historyExpansion: HistoryExpansionState | null = null;
@@ -26,6 +29,7 @@ let controller: SessionController | null = null;
 let benchmarkRunner: AutomaticBenchmarkRunner | null = null;
 let benchmarkUi: BenchmarkStatusUi | null = null;
 let longStressRunner: LongConversationStressRunner | null = null;
+let fieldRecorder: PassiveFieldRecorder | null = null;
 const statsBridge = new LocalStatsBridge();
 const stabilityTrace = __CSG_DEBUG_BUILD__ ? new StabilityTraceCollector() : null;
 const STABILITY_NETWORK_TRACE_EVENT = 'csg:stability-network-trace';
@@ -121,7 +125,9 @@ function setupHistoryEvents(): void {
 function setupStatsEvents(): void {
   window.addEventListener(EVENTS.stats, (event) => {
     const statsEvent = parseStringEvent<GuardStatsEvent>(event);
-    if (statsEvent) statsBridge.recordEvent(statsEvent);
+    if (!statsEvent) return;
+    statsBridge.recordEvent(statsEvent);
+    fieldRecorder?.recordStatsEvent(statsEvent.type);
   });
 }
 
@@ -143,7 +149,7 @@ function setupDebugCommands(): void {
 }
 
 function setupBenchmark(): void {
-  if (!__CSG_DEBUG_BUILD__ || !controller) return;
+  if (!__CSG_DEBUG_BUILD__ || __CSG_FIELD_BUILD__ || !controller) return;
   benchmarkUi = new BenchmarkStatusUi(
     () => { void benchmarkRunner?.stop(); },
     () => { void benchmarkRunner?.resume(); },
@@ -188,6 +194,15 @@ function setupRuntimeMessages(): void {
     }
     if (request.type === 'csg:restore-lightweight') {
       void restoreLightweightMode().then((result) => sendResponse(result));
+      return true;
+    }
+
+    if (__CSG_FIELD_BUILD__ && request.type === 'csg:field-status') {
+      void fieldRecorder?.status().then((fieldStatus) => sendResponse({ ok: true, fieldStatus }));
+      return true;
+    }
+    if (__CSG_FIELD_BUILD__ && request.type === 'csg:field-reset') {
+      void fieldRecorder?.reset().then(() => fieldRecorder?.status()).then((fieldStatus) => sendResponse({ ok: true, fieldStatus }));
       return true;
     }
 
@@ -270,10 +285,23 @@ async function init(): Promise<void> {
     (metrics) => {
       statsBridge.observeMetrics(metrics);
       sendDebugMetrics(metrics);
+      fieldRecorder?.notifyEvaluation();
     },
-    __CSG_DEBUG_BUILD__ ? (event) => stabilityTrace?.addSession(event) : undefined,
+    (__CSG_DEBUG_BUILD__ || __CSG_FIELD_BUILD__) ? (event) => {
+      if (__CSG_DEBUG_BUILD__) stabilityTrace?.addSession(event);
+      if (__CSG_FIELD_BUILD__) fieldRecorder?.recordSessionTrace(event);
+    } : undefined,
     (conversationId, dom) => statsBridge.observeEvaluation(conversationId, dom)
   );
+  if (__CSG_FIELD_BUILD__) {
+    fieldRecorder = new PassiveFieldRecorder({
+      buildId: __CSG_BUILD_ID__,
+      storage: chrome.storage.local,
+      getConfig: runtimeConfig,
+      getMetrics: () => controller?.getMetrics() ?? { ...EMPTY_METRICS }
+    });
+    fieldRecorder.start();
+  }
   controller.start();
   setupBenchmark();
 
@@ -289,6 +317,7 @@ async function init(): Promise<void> {
 
   window.addEventListener('pagehide', () => {
     benchmarkRunner?.destroy();
+    fieldRecorder?.destroy();
     controller?.destroy();
     statsBridge.destroy();
   }, { once: true });

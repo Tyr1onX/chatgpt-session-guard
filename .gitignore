@@ -10,3 +10,5 @@ artifacts/smoke/
 _research-*/
 *.log
 .DS_Store
+
+artifacts/field-debug/

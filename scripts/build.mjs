@@ -5,15 +5,19 @@ import path from 'node:path';
 
 const root = process.cwd();
 const dist = path.join(root, 'dist');
-const debugBuild = process.argv.includes('--debug');
+const fieldBuild = process.argv.includes('--field');
+const explicitDebugBuild = process.argv.includes('--debug');
+const debugBuild = explicitDebugBuild;
+const buildFlavor = fieldBuild ? 'field' : explicitDebugBuild ? 'debug' : 'production';
 let buildId = 'uncommitted';
 try {
   buildId = execFileSync('git', ['rev-parse', '--short=12', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim();
   const dirty = execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim().length > 0;
   if (dirty) buildId += '-dirty';
 } catch {
-  // A source archive without .git still produces a usable debug build.
+  // A source archive without .git still produces a usable build.
 }
+if (fieldBuild) buildId += '-field';
 
 await rm(dist, { recursive: true, force: true });
 await mkdir(dist, { recursive: true });
@@ -22,12 +26,13 @@ const common = {
   bundle: true,
   minify: false,
   minifySyntax: true,
-  sourcemap: debugBuild,
+  sourcemap: explicitDebugBuild,
   target: 'chrome120',
   platform: 'browser',
   logLevel: 'info',
   define: {
     __CSG_DEBUG_BUILD__: debugBuild ? 'true' : 'false',
+    __CSG_FIELD_BUILD__: fieldBuild ? 'true' : 'false',
     __CSG_BUILD_ID__: JSON.stringify(buildId)
   }
 };
@@ -43,15 +48,28 @@ for (const file of ['manifest.json', 'popup.html', 'popup.css']) {
   await cp(path.join(root, 'extension', file), path.join(dist, file));
 }
 
-if (!debugBuild) {
-  const popupPath = path.join(dist, 'popup.html');
-  const html = await readFile(popupPath, 'utf8');
-  await writeFile(
-    popupPath,
-    html.replace(/\s*<!-- CSG_DEBUG_START -->[\s\S]*?<!-- CSG_DEBUG_END -->\s*/g, '\n'),
-    'utf8'
-  );
+const popupPath = path.join(dist, 'popup.html');
+let popupHtml = await readFile(popupPath, 'utf8');
+if (!explicitDebugBuild || fieldBuild) {
+  popupHtml = popupHtml.replace(/\s*<!-- CSG_DEBUG_START -->[\s\S]*?<!-- CSG_DEBUG_END -->\s*/g, '\n');
+}
+if (!fieldBuild) {
+  popupHtml = popupHtml.replace(/\s*<!-- CSG_FIELD_START -->[\s\S]*?<!-- CSG_FIELD_END -->\s*/g, '\n');
+}
+if (fieldBuild) {
+  popupHtml = popupHtml
+    .replace('<title>ChatGPT Session Guard</title>', '<title>ChatGPT Session Guard — Field Debug</title>')
+    .replace('<h1>ChatGPT Session Guard</h1>', '<h1>ChatGPT Session Guard — Field Debug</h1>');
+}
+await writeFile(popupPath, popupHtml, 'utf8');
 
+if (fieldBuild) {
+  const manifestPath = path.join(dist, 'manifest.json');
+  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  manifest.name = 'ChatGPT Session Guard — Field Debug';
+  manifest.description = 'ChatGPT Session Guard 现场诊断版：本地、被动、脱敏记录真实滚动异常。';
+  if (manifest.action) manifest.action.default_title = manifest.name;
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
 }
 
-console.log(`Built ChatGPT Session Guard (${debugBuild ? 'debug' : 'production'}, ${buildId}) into dist/`);
+console.log(`Built ChatGPT Session Guard (${buildFlavor}, ${buildId}) into dist/`);

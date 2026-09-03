@@ -2,6 +2,7 @@ import type { BenchmarkState } from './benchmark';
 import type { HistoryUnit } from './config';
 import type { LongStressState } from './long-stress';
 import type { NetworkMode } from './events';
+import type { FieldRecorderStatus } from './field-recorder';
 
 export interface DebugMetrics {
   conversationId: string | null;
@@ -62,7 +63,9 @@ export type PopupRequest =
   | { type: 'csg:restore-lightweight' }
   | { type: 'csg:long-stress-start' }
   | { type: 'csg:long-stress-stop' }
-  | { type: 'csg:stability-trace-get' };
+  | { type: 'csg:stability-trace-get' }
+  | { type: 'csg:field-status' }
+  | { type: 'csg:field-reset' };
 
 export interface PopupResponse {
   metrics?: DebugMetrics;
@@ -72,4 +75,5 @@ export interface PopupResponse {
   error?: string;
   stabilityTrace?: unknown;
   stabilityReport?: string | null;
+  fieldStatus?: FieldRecorderStatus;
 }

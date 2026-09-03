@@ -90,6 +90,25 @@
       </details>
     </section>
 
+    <!-- CSG_FIELD_START -->
+    <section id="fieldRecorderSection" class="compact-section stats-section">
+      <div class="benchmark-heading">
+        <h2>现场诊断</h2>
+        <span class="debug-badge">Field Debug</span>
+      </div>
+      <p class="privacy-note">静默、本地、被动记录；不保存聊天正文，不上传数据。</p>
+      <div class="row"><span>状态</span><strong id="fieldRecorderStatus">检查中…</strong></div>
+      <div class="row"><span>已捕获事件</span><strong id="fieldIncidentCount">0</strong></div>
+      <div class="row"><span>最近事件</span><strong id="fieldRecentIncident">无</strong></div>
+      <div class="row"><span>Build</span><strong id="fieldBuildId">—</strong></div>
+      <div class="benchmark-actions">
+        <button id="fieldExport" type="button" class="secondary">导出现场诊断</button>
+        <button id="fieldReset" type="button" class="secondary">清除现场诊断</button>
+      </div>
+      <p id="fieldMessage" class="benchmark-message"></p>
+    </section>
+    <!-- CSG_FIELD_END -->
+
     <!-- CSG_DEBUG_START -->
     <section id="benchmarkSection" class="benchmark">
       <div class="benchmark-heading">

@@ -17,7 +17,9 @@
     "smoke:chrome": "node scripts/smoke/run.mjs",
     "smoke:chrome:headed": "node scripts/smoke/run.mjs --headed",
     "smoke:chrome:extended": "node scripts/smoke/run.mjs --headed --extended",
-    "check": "npm run typecheck && npm run lint && npm run test && npm run build"
+    "check": "npm run typecheck && npm run lint && npm run test && npm run build",
+    "build:field": "node scripts/build.mjs --field",
+    "package:field": "node scripts/package-field.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.34.0",
