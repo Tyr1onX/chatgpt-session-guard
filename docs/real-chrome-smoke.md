@@ -169,7 +169,11 @@ Real Chrome runner 检查：
 - DOM vs Session Guard Debug metrics；
 - placeholder / old-turn visibility contradiction；
 - 滚动过程中意外 older-page request；
-- 默认 12 次、有硬上限 25 次的 bounded scroll；
+- 默认 16 个、有硬上限 30 个的 Playwright page-level `mouse.wheel` 事件；
+- 单次 Smoke 内按 Gentle / Normal / Burst 三段有限组合，不使用系统鼠标；
+- 每次 wheel 后在 0 / 16 / 32 / 50 / 100 / 150 / 250ms（Burst 中间事件使用更短窗口）做 transient sampling；
+- 采样记录 layout/viewport visibility、visible rounds/turns、placeholder、scrollTop/scrollHeight、Debug rendered/hidden rounds、boundary hash；
+- scrollHeight spike / boundary shift 只作诊断，placeholder/old-turn、metrics/DOM、viewport history leak 保留为失败；
 - Stability Trace；
 - 配置了样本时的 SPA switching。
 
@@ -182,7 +186,11 @@ VISIBLE_HISTORY_BOUNDARY_EXCEEDED
 PLACEHOLDER_VISIBILITY_CONTRADICTION
 METRICS_DOM_DIVERGENCE
 UNEXPECTED_OLDER_PAGE_NETWORK_REQUEST
+TRANSIENT_HISTORY_VISIBILITY_LEAK
+VISIBLE_HISTORY_LEAK_IN_VIEWPORT
 ```
+
+Real Chrome CDP 启动不自动重试；若启动失败，本轮先离线分析。Real Smoke 浏览器先以 `about:blank` 启动，CDP 与扩展准备完成后才导航到绑定会话。
 
 ## Safety stops
 

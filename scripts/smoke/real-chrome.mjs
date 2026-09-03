@@ -119,7 +119,7 @@ async function waitForCdpEndpoint(endpoint, child, timeoutMs = 15_000) {
       const response = await fetch(`${validated.endpoint}/json/version`, { signal: AbortSignal.timeout(700) });
       if (response.ok) return validated.endpoint;
     } catch {
-      // Chrome may still be starting. Retry only the local endpoint probe.
+      // Chrome may still be starting. Retry only the local endpoint probe, never the browser launch.
     }
     await new Promise((resolve) => setTimeout(resolve, 120));
   }
@@ -135,6 +135,7 @@ export async function launchChromeWithCdp({ chromePath, profileDir, url = 'https
     `--remote-debugging-port=${port}`,
     '--no-first-run',
     '--no-default-browser-check',
+    '--hide-crash-restore-bubble',
     url
   ]);
   try {

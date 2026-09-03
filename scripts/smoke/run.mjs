@@ -21,13 +21,14 @@ import {
   waitForLoadedBuildId
 } from './chatgpt.mjs';
 import { SanitizedNetworkMonitor } from './network-monitor.mjs';
-import { createRunSalt, sanitizeForEvidence } from './sanitizer.mjs';
+import { createRealisticWheelPlan, runRealisticScrollPlan } from './scroll-regression.mjs';
+import { createRunSalt, hashIdentifier, sanitizeForEvidence } from './sanitizer.mjs';
 import { buildSmokeReport, createTestResult } from './report.mjs';
 import { captureMaskedFailureScreenshot, writeSmokeArtifacts } from './evidence.mjs';
 import { createSupportZip, openArtifactDirectory, resultActions, writeLatestRun } from './support-bundle.mjs';
 
-const HARD_SCROLL_LIMIT = 25;
-const DEFAULT_SCROLL_ATTEMPTS = 12;
+const HARD_SCROLL_LIMIT = 30;
+const DEFAULT_SCROLL_ATTEMPTS = 16;
 const SETTLE_MS = 600;
 
 function elapsed(started) {
@@ -150,63 +151,59 @@ try {
   if (!configOk) throw new Error('ULTRA_LITE_CONFIG_NOT_APPLIED');
 
   const scrollStarted = performance.now();
-  const olderBefore = monitor.records.filter((record) => record.requestClassification === 'older-page').length;
-  const failureCodes = [];
+  const olderPageCount = () => monitor.records.filter((record) => record.requestClassification === 'older-page').length;
   let finalDom = baselineDom;
   let finalMetrics = baselineMetrics;
+  const scrollPlan = createRealisticWheelPlan({ maxEvents: scrollAttempts });
+  const scrollResult = await runRealisticScrollPlan({
+    plan: scrollPlan,
+    wheel: (deltaY) => scrollUpOnce(chatPage, deltaY),
+    sample: async ({ eventIndex, profile, deltaY, timestampOffsetMs }) => {
+      const [dom, state] = await Promise.all([readDomSummary(chatPage), getExtensionState(extensionPage)]);
+      const metrics = state?.metrics ?? finalMetrics;
+      finalDom = dom;
+      if (metrics) finalMetrics = metrics;
+      return {
+        eventIndex,
+        profile,
+        deltaY,
+        timestampOffsetMs,
+        scrollTop: dom.scrollTop,
+        scrollHeight: dom.scrollHeight,
+        scrollClientHeight: dom.scrollClientHeight,
+        placeholderPresent: dom.placeholderPresent,
+        placeholderVisible: dom.placeholderVisible,
+        placeholderIntersectsViewport: dom.placeholderIntersectsViewport,
+        visibleTurnCount: dom.visibleTurnCount,
+        viewportVisibleTurnCount: dom.viewportVisibleTurnCount,
+        visibleRoundCount: dom.visibleRoundCount,
+        viewportVisibleRoundCount: dom.viewportVisibleRoundCount,
+        oldTurnsVisible: dom.oldTurnsVisible,
+        oldTurnsIntersectViewport: dom.oldTurnsIntersectViewport,
+        generationActive: dom.generationActive,
+        configuredRounds: metrics?.configuredHistoryCount ?? 1,
+        metricsRenderedRounds: metrics?.renderedRounds ?? null,
+        metricsHiddenRounds: metrics?.hiddenRounds ?? null,
+        metricsBoundaryIndex: metrics?.boundaryIndex ?? null,
+        boundaryTurnIdHash: hashIdentifier(metrics?.boundaryTurnId, salt)
+      };
+    },
+    getSafetyStop: () => safetyStatus(monitor.abortReason),
+    getOlderPageCount: olderPageCount,
+    configuredRounds: 1
+  });
 
-  for (let attempt = 1; attempt <= scrollAttempts; attempt += 1) {
-    if (monitor.abortReason) {
-      pushUnique(safetyStops, monitor.abortReason);
-      break;
-    }
-
-    const scroll = await scrollUpOnce(chatPage);
-    await chatPage.waitForTimeout(SETTLE_MS);
-    finalMetrics = await waitForGuardStable(extensionPage, { timeoutMs: 3_000 });
-    finalDom = await readDomSummary(chatPage);
-    const olderAfter = monitor.records.filter((record) => record.requestClassification === 'older-page').length;
-    const olderDuringScroll = Math.max(0, olderAfter - olderBefore);
-    const allowedVisibleRounds = finalDom.generationActive ? 2 : 1;
-
-    if (finalDom.visibleRoundCount > allowedVisibleRounds) {
-      pushUnique(failureCodes, 'VISIBLE_HISTORY_BOUNDARY_EXCEEDED');
-    }
-    if (finalDom.placeholderVisible && finalDom.oldTurnsVisible) {
-      pushUnique(failureCodes, 'PLACEHOLDER_VISIBILITY_CONTRADICTION');
-    }
-    if (finalDom.visibleRoundCount > finalMetrics.renderedRounds) {
-      pushUnique(failureCodes, 'METRICS_DOM_DIVERGENCE');
-    }
-    if (olderDuringScroll > 0) {
-      pushUnique(failureCodes, 'UNEXPECTED_OLDER_PAGE_NETWORK_REQUEST');
-    }
-
-    domEvidence.attempts.push({
-      attempt,
-      moved: scroll.moved,
-      visibleRoundCount: finalDom.visibleRoundCount,
-      visibleTurnCount: finalDom.visibleTurnCount,
-      placeholderPresent: finalDom.placeholderPresent,
-      placeholderVisible: finalDom.placeholderVisible,
-      oldTurnsVisible: finalDom.oldTurnsVisible,
-      renderedRoundsMetric: finalMetrics.renderedRounds,
-      configuredHistoryCount: finalMetrics.configuredHistoryCount,
-      olderPageRequestsDuringScroll: olderDuringScroll,
-      scrollTopBefore: scroll.before,
-      scrollTopAfter: scroll.after,
-      scrollHeight: scroll.max
-    });
-
-    if (failureCodes.length > 0) break;
-    if (!scroll.moved && attempt >= 3) break;
-  }
-
-  domEvidence.final = finalDom;
-  const olderAfterScroll = monitor.records.filter((record) => record.requestClassification === 'older-page').length;
-  const olderDuringScroll = Math.max(0, olderAfterScroll - olderBefore);
-  const safetyFailure = safetyStatus(monitor.abortReason);
+  const failureCodes = [...scrollResult.failureCodes];
+  const safetyFailure = scrollResult.safetyStop ?? safetyStatus(monitor.abortReason);
   if (safetyFailure) pushUnique(safetyStops, safetyFailure);
+  const firstWheel = scrollResult.wheelEvents[0] ?? null;
+  const planCompletion = scrollResult.planCompletion;
+
+  domEvidence.attempts = scrollResult.wheelEvents.map((event) => ({
+    ...event,
+    samples: scrollResult.samples.filter((sample) => sample.eventIndex === event.eventIndex)
+  }));
+  domEvidence.final = finalDom;
 
   tests.push(createTestResult('ultra-lite-scroll-containment', safetyFailure ? 'ABORTED' : failureCodes.length > 0 ? 'FAIL' : 'PASS', {
     durationMs: elapsed(scrollStarted),
@@ -215,11 +212,33 @@ try {
       configuredRounds: 1,
       visibleBefore: baselineDom.visibleRoundCount,
       visibleAfter: finalDom.visibleRoundCount,
+      viewportVisibleAfter: finalDom.viewportVisibleRoundCount,
       placeholderVisible: finalDom.placeholderVisible,
+      placeholderIntersectsViewport: finalDom.placeholderIntersectsViewport,
       oldTurnsVisible: finalDom.oldTurnsVisible,
+      oldTurnsIntersectViewport: finalDom.oldTurnsIntersectViewport,
       renderedRoundsMetric: finalMetrics.renderedRounds,
-      olderPageRequests: olderDuringScroll,
-      attempts: domEvidence.attempts.length,
+      hiddenRoundsMetric: finalMetrics.hiddenRounds,
+      olderPageRequests: scrollResult.olderPageRequests,
+      plannedPhases: planCompletion.plannedPhases,
+      executedPhases: planCompletion.executedPhases,
+      plannedWheelEvents: planCompletion.plannedWheelEvents,
+      executedWheelEvents: planCompletion.executedWheelEvents,
+      plannedSamples: planCompletion.plannedSamples,
+      executedSamples: planCompletion.executedSamples,
+      realisticPlanComplete: planCompletion.complete,
+      selectedScrollerTag: firstWheel?.selectedScrollerTag ?? null,
+      selectedScrollerScrollHeight: firstWheel?.scrollHeightBefore ?? null,
+      selectedScrollerClientHeight: firstWheel?.scrollClientHeight ?? null,
+      initialScrollTop: firstWheel?.scrollTopBefore ?? null,
+      firstAfterWheelScrollTop: firstWheel?.scrollTopAfter ?? null,
+      wheelEvents: scrollResult.wheelEvents.length,
+      sampleCount: scrollResult.samples.length,
+      scrollProfiles: [...new Set(scrollResult.wheelEvents.map((event) => event.profile))],
+      samplingWindowMaxMs: Math.max(0, ...scrollPlan.flatMap((event) => event.sampleOffsetsMs)),
+      transientScrollHeightSpike: scrollResult.diagnostics.transientScrollHeightSpike,
+      unexpectedBoundaryShift: scrollResult.diagnostics.unexpectedBoundaryShift,
+      viewportLeakDetected: scrollResult.diagnostics.viewportLeakDetected,
       failureCodes
     }
   }));

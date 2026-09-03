@@ -131,7 +131,7 @@ export async function launchRealChromeSmokeBrowser({ root = process.cwd() }) {
   const paths = await assertChromeProfile(root);
   const chromePath = discoverChromeExecutable();
   const browserVersion = await detectChromeVersion(chromePath);
-  const launched = await launchChromeWithCdp({ chromePath, profileDir: paths.chromeProfileDir });
+  const launched = await launchChromeWithCdp({ chromePath, profileDir: paths.chromeProfileDir, url: 'about:blank' });
   let browser;
   try {
     browser = await chromium.connectOverCDP(launched.endpoint);

@@ -226,10 +226,21 @@ export async function readDomSummary(page) {
   return page.evaluate((turnSelector) => {
     const turns = Array.from(document.querySelectorAll(turnSelector));
     const placeholder = document.getElementById('csg-history-placeholder');
-    const visible = (element) => {
+    const visibleInLayout = (element) => {
       const style = getComputedStyle(element);
       const rect = element.getBoundingClientRect();
-      return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+      const opacity = Number.parseFloat(style.opacity || '1');
+      return style.display !== 'none'
+        && style.visibility !== 'hidden'
+        && Number.isFinite(opacity)
+        && opacity > 0.01
+        && rect.width > 0
+        && rect.height > 0;
+    };
+    const intersectsViewport = (element) => {
+      if (!visibleInLayout(element)) return false;
+      const rect = element.getBoundingClientRect();
+      return rect.bottom > 0 && rect.top < window.innerHeight && rect.right > 0 && rect.left < window.innerWidth;
     };
     const role = (turn) => {
       const direct = turn.getAttribute('data-message-author-role');
@@ -237,31 +248,50 @@ export async function readDomSummary(page) {
       const value = direct ?? nested;
       return value === 'user' || value === 'assistant' ? value : 'unknown';
     };
-    const visibleTurns = turns.filter(visible);
-    let visibleRoundCount = 0;
-    let hasRound = false;
-    for (const turn of visibleTurns) {
-      const turnRole = role(turn);
-      if (!hasRound || turnRole === 'user') {
-        visibleRoundCount += 1;
-        hasRound = true;
+    const countRounds = (items) => {
+      let count = 0;
+      let hasRound = false;
+      for (const turn of items) {
+        const turnRole = role(turn);
+        if (!hasRound || turnRole === 'user') {
+          count += 1;
+          hasRound = true;
+        }
       }
-    }
-    const oldTurnsVisible = Boolean(placeholder && visible(placeholder) && turns.some((turn) => {
-      const beforePlaceholder = Boolean(turn.compareDocumentPosition(placeholder) & Node.DOCUMENT_POSITION_FOLLOWING);
-      return beforePlaceholder && visible(turn);
-    }));
-    const scrollingElement = document.scrollingElement;
+      return count;
+    };
+    const isScrollable = (element) => {
+      const overflowY = getComputedStyle(element).overflowY;
+      return element.scrollHeight > element.clientHeight + 1
+        && (element === document.scrollingElement || /^(auto|scroll|overlay)$/.test(overflowY));
+    };
+    const viewportAnchor = turns.find(intersectsViewport) ?? turns.find(visibleInLayout) ?? null;
+    let scrollTarget = viewportAnchor?.parentElement ?? null;
+    while (scrollTarget && !isScrollable(scrollTarget)) scrollTarget = scrollTarget.parentElement;
+    if (!scrollTarget) scrollTarget = document.scrollingElement;
+    const layoutVisibleTurns = turns.filter(visibleInLayout);
+    const viewportVisibleTurns = turns.filter(intersectsViewport);
+    const oldTurns = placeholder ? turns.filter((turn) => Boolean(turn.compareDocumentPosition(placeholder) & Node.DOCUMENT_POSITION_FOLLOWING)) : [];
+    const oldTurnsVisible = oldTurns.some(visibleInLayout);
+    const oldTurnsIntersectViewport = oldTurns.some(intersectsViewport);
+    const placeholderVisible = Boolean(placeholder && visibleInLayout(placeholder));
+    const placeholderIntersectsViewport = Boolean(placeholder && intersectsViewport(placeholder));
     return {
       turnCount: turns.length,
-      visibleTurnCount: visibleTurns.length,
-      visibleRoundCount,
-      hiddenTurnCount: Math.max(0, turns.length - visibleTurns.length),
+      visibleTurnCount: layoutVisibleTurns.length,
+      viewportVisibleTurnCount: viewportVisibleTurns.length,
+      visibleRoundCount: countRounds(layoutVisibleTurns),
+      viewportVisibleRoundCount: countRounds(viewportVisibleTurns),
+      hiddenTurnCount: Math.max(0, turns.length - layoutVisibleTurns.length),
       placeholderPresent: Boolean(placeholder),
-      placeholderVisible: Boolean(placeholder && visible(placeholder)),
+      placeholderVisible,
+      placeholderIntersectsViewport,
       oldTurnsVisible,
-      scrollHeight: scrollingElement?.scrollHeight ?? 0,
-      scrollTop: scrollingElement?.scrollTop ?? 0,
+      oldTurnsIntersectViewport,
+      visibleHistoryLeakInViewport: placeholderIntersectsViewport && oldTurnsIntersectViewport,
+      scrollHeight: scrollTarget?.scrollHeight ?? 0,
+      scrollTop: scrollTarget?.scrollTop ?? 0,
+      scrollClientHeight: scrollTarget?.clientHeight ?? 0,
       balancedHiddenCount: document.querySelectorAll('.csg-balanced-hidden').length,
       aggressivePrunedCount: document.querySelectorAll('.csg-aggressive-pruned').length,
       safeWindowedCount: document.querySelectorAll('.csg-safe-windowed').length,
@@ -270,30 +300,59 @@ export async function readDomSummary(page) {
   }, TURN_SELECTOR);
 }
 
-export async function scrollUpOnce(page) {
+async function readScrollTargetSnapshot(page) {
   return page.evaluate((turnSelector) => {
-    const candidates = new Set();
-    if (document.scrollingElement) candidates.add(document.scrollingElement);
-    const turns = document.querySelectorAll(turnSelector);
-    const anchors = [turns[0], turns[turns.length - 1]].filter(Boolean);
-    for (const anchor of anchors) {
-      let current = anchor.parentElement;
-      while (current) {
-        if (current.scrollHeight > current.clientHeight + 100) candidates.add(current);
-        current = current.parentElement;
-      }
-    }
-    for (const element of document.querySelectorAll('main, [data-scroll-root], [class*="overflow-y-auto"]')) {
-      if (element.scrollHeight > element.clientHeight + 100) candidates.add(element);
-    }
-    const target = [...candidates].sort((a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight))[0];
-    if (!target) return { moved: false, before: 0, after: 0, max: 0 };
-    const before = target.scrollTop;
-    const step = Math.max(650, Math.round(target.clientHeight * 0.8));
-    target.scrollTop = Math.max(0, before - step);
-    target.dispatchEvent(new Event('scroll', { bubbles: true }));
-    return { moved: target.scrollTop !== before, before, after: target.scrollTop, max: target.scrollHeight };
+    const turns = Array.from(document.querySelectorAll(turnSelector));
+    const intersectsViewport = (element) => {
+      const rect = element.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0
+        && rect.bottom > 0 && rect.top < innerHeight
+        && rect.right > 0 && rect.left < innerWidth;
+    };
+    const isScrollable = (element) => {
+      const overflowY = getComputedStyle(element).overflowY;
+      return element.scrollHeight > element.clientHeight + 1
+        && (element === document.scrollingElement || /^(auto|scroll|overlay)$/.test(overflowY));
+    };
+    const viewportAnchor = turns.find(intersectsViewport) ?? null;
+    const anchor = viewportAnchor ?? turns.at(-1) ?? null;
+    let target = anchor?.parentElement ?? null;
+    while (target && !isScrollable(target)) target = target.parentElement;
+    if (!target && document.scrollingElement && isScrollable(document.scrollingElement)) target = document.scrollingElement;
+    if (!target) return { found: false, scrollerTag: null, scrollTop: 0, scrollHeight: 0, clientHeight: 0, pointerX: Math.max(1, innerWidth / 2), pointerY: Math.max(1, innerHeight / 2) };
+    const rect = viewportAnchor?.getBoundingClientRect() ?? (target === document.scrollingElement
+      ? { left: 0, top: 0, width: innerWidth, height: innerHeight }
+      : target.getBoundingClientRect());
+    const pointerX = Math.max(1, Math.min(innerWidth - 1, rect.left + Math.max(1, rect.width) / 2));
+    const pointerY = Math.max(1, Math.min(innerHeight - 1, rect.top + Math.max(1, rect.height) / 2));
+    return {
+      found: true,
+      scrollerTag: target.tagName?.toLowerCase() ?? 'unknown',
+      scrollTop: target.scrollTop,
+      scrollHeight: target.scrollHeight,
+      clientHeight: target.clientHeight,
+      pointerX,
+      pointerY
+    };
   }, TURN_SELECTOR);
+}
+
+export async function scrollUpOnce(page, deltaY = -420) {
+  const before = await readScrollTargetSnapshot(page);
+  if (!before.found) return { moved: false, before: 0, after: 0, max: 0 };
+  await page.mouse.move(before.pointerX, before.pointerY);
+  await page.mouse.wheel(0, -Math.abs(deltaY));
+  const after = await readScrollTargetSnapshot(page);
+  return {
+    moved: after.scrollTop < before.scrollTop,
+    selectedScrollerTag: before.scrollerTag,
+    before: before.scrollTop,
+    after: after.scrollTop,
+    scrollHeightBefore: before.scrollHeight,
+    scrollHeightAfter: after.scrollHeight,
+    max: after.scrollHeight,
+    clientHeight: after.clientHeight
+  };
 }
 
 export async function trySpaSwitch(page, conversationId) {
