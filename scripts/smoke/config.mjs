@@ -28,19 +28,23 @@ export function validateSmokeConfig(value) {
   };
 }
 
-export async function loadSmokeConfig(root = process.cwd()) {
+export async function tryLoadSmokeConfig(root = process.cwd()) {
   const { configPath } = smokePaths(root);
-  let parsed;
   try {
-    parsed = JSON.parse(await readFile(configPath, 'utf8'));
+    const parsed = JSON.parse(await readFile(configPath, 'utf8'));
+    const result = validateSmokeConfig(parsed);
+    return result.ok ? { ok: true, config: result.config } : { ok: false, error: result.error };
   } catch (error) {
     if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') {
-      throw new Error('SMOKE_CONFIG_MISSING: run npm run smoke:setup first');
+      return { ok: false, error: 'SMOKE_CONFIG_MISSING' };
     }
-    throw new Error('MALFORMED_SMOKE_CONFIG: run npm run smoke:setup again');
+    return { ok: false, error: 'MALFORMED_SMOKE_CONFIG' };
   }
-  const result = validateSmokeConfig(parsed);
-  if (!result.ok) throw new Error(`${result.error}: run npm run smoke:setup again`);
+}
+
+export async function loadSmokeConfig(root = process.cwd()) {
+  const result = await tryLoadSmokeConfig(root);
+  if (!result.ok) throw new Error(`${result.error}: run npm run smoke:setup first`);
   return result.config;
 }
 

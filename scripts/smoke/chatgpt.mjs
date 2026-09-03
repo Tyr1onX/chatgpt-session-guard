@@ -19,14 +19,105 @@ export async function getOrCreateChatPage(context) {
   return existing ?? context.newPage();
 }
 
-export async function isLoggedIn(page) {
-  if (!page.url().startsWith(CHATGPT_ORIGIN)) return false;
-  const composer = page.locator('#prompt-textarea, textarea[placeholder], [contenteditable="true"]').first();
+export async function loginSignals(page) {
+  if (!page.url().startsWith(CHATGPT_ORIGIN)) return { loggedIn: false, score: 0 };
+  const selectors = [
+    '#prompt-textarea',
+    'main [contenteditable="true"]',
+    'nav a[href^="/c/"]',
+    '[data-testid*="profile" i], button[aria-label*="profile" i], button[aria-label*="account" i]'
+  ];
+  let score = 0;
+  let composerPresent = false;
+  for (const selector of selectors) {
+    try {
+      const present = (await page.locator(selector).first().count()) > 0;
+      if (present) score += 1;
+      if (selector === '#prompt-textarea' && present) composerPresent = true;
+    } catch {
+      // Login navigation can replace the document while signals are sampled.
+    }
+  }
+  let authControlsPresent = false;
   try {
-    await composer.waitFor({ state: 'attached', timeout: 10_000 });
-    return true;
+    authControlsPresent = (await page.locator('a[href*="auth/login"], a[href*="auth/signup"], button[data-testid*="login" i]').count()) > 0;
   } catch {
-    return false;
+    authControlsPresent = false;
+  }
+  return { loggedIn: score >= 2 || (composerPresent && !authControlsPresent) || (score >= 1 && page.url().includes('/c/')), score };
+}
+
+export async function isLoggedIn(page) {
+  return (await loginSignals(page)).loggedIn;
+}
+
+export async function showBootstrapStatus(page, title, detail) {
+  try {
+    await page.evaluate(({ title, detail }) => {
+      let box = document.getElementById('csg-bootstrap-status');
+      if (!box) {
+        box = document.createElement('div');
+        box.id = 'csg-bootstrap-status';
+        Object.assign(box.style, {
+          position: 'fixed', right: '20px', top: '20px', zIndex: '2147483647', maxWidth: '360px',
+          padding: '14px 16px', borderRadius: '12px', background: 'Canvas', color: 'CanvasText',
+          border: '1px solid color-mix(in srgb, currentColor 20%, transparent)',
+          boxShadow: '0 8px 30px rgba(0,0,0,.18)', font: '14px/1.5 system-ui,sans-serif'
+        });
+        document.documentElement.appendChild(box);
+      }
+      box.replaceChildren();
+      const strong = document.createElement('strong');
+      strong.textContent = title;
+      const text = document.createElement('div');
+      text.textContent = detail;
+      text.style.marginTop = '6px';
+      box.append(strong, text);
+    }, { title, detail });
+  } catch {
+    // Navigation may briefly destroy the document; the next polling pass retries.
+  }
+}
+
+export async function waitForLogin(page, { timeoutMs = 10 * 60_000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await showBootstrapStatus(page, 'Session Guard 自动测试', '请在这个独立测试浏览器中登录 ChatGPT。登录完成后无需关闭窗口，程序会自动继续。');
+    if (await isLoggedIn(page)) return true;
+    await page.waitForTimeout(1200);
+  }
+  return false;
+}
+
+export async function waitForConversationSelection(page, { timeoutMs = 10 * 60_000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await showBootstrapStatus(page, '登录成功', '现在只需要在左侧历史记录中点开一个很长、容易出现问题的旧聊天。程序会自动识别并继续。');
+    const id = conversationIdFromUrl(page.url());
+    if (id) {
+      try {
+        await page.locator(TURN_SELECTOR).first().waitFor({ state: 'attached', timeout: 5000 });
+        return id;
+      } catch {
+        // Keep waiting until a usable conversation is selected.
+      }
+    }
+    await page.waitForTimeout(900);
+  }
+  return null;
+}
+
+export async function probeBoundConversation(page, conversationId) {
+  try {
+    const response = await page.goto(CHATGPT_ORIGIN + '/c/' + conversationId, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    if (response && [403, 404, 410].includes(response.status())) return { status: 'missing' };
+    await page.waitForTimeout(900);
+    if (!(await isLoggedIn(page))) return { status: 'login-lost' };
+    await page.locator(TURN_SELECTOR).first().waitFor({ state: 'attached', timeout: 12_000 });
+    return { status: 'ok' };
+  } catch {
+    if (!page.url().includes('/c/' + conversationId)) return { status: 'missing' };
+    return { status: 'ui-changed' };
   }
 }
 

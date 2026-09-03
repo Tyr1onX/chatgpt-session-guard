@@ -33,14 +33,17 @@ export function buildDebugExtension(root = process.cwd()) {
 export async function verifyDebugBuild({ distDir, expectedBuildId }) {
   const manifest = JSON.parse(await readFile(path.join(distDir, 'manifest.json'), 'utf8'));
   const popup = await readFile(path.join(distDir, 'popup.html'), 'utf8');
+  const popupScript = await readFile(path.join(distDir, 'popup.js'), 'utf8');
+  const mainWorld = await readFile(path.join(distDir, 'main-world.js'), 'utf8');
   const background = await readFile(path.join(distDir, 'background.js'), 'utf8');
   const content = await readFile(path.join(distDir, 'content.js'), 'utf8');
 
   if (manifest.manifest_version !== 3) throw new Error('EXTENSION_MANIFEST_NOT_MV3');
   if (typeof manifest.version !== 'string' || manifest.version.length === 0) throw new Error('EXTENSION_VERSION_MISSING');
-  if (!background.includes(expectedBuildId) && !content.includes(expectedBuildId)) {
+  if (!background.includes(expectedBuildId) && !content.includes(expectedBuildId) && !mainWorld.includes(expectedBuildId)) {
     throw new Error(`DEBUG_BUILD_ID_MISMATCH: expected ${expectedBuildId}`);
   }
+  if (popupScript.length === 0 || mainWorld.length === 0 || content.length === 0) throw new Error('DEBUG_BUILD_FILE_EMPTY');
   for (const marker of ['性能测试', '超长会话压力测试', '窗口稳定性诊断']) {
     if (!popup.includes(marker)) throw new Error(`DEBUG_UI_MARKER_MISSING: ${marker}`);
   }
