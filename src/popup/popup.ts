@@ -15,6 +15,7 @@ import {
   type HistoryUnit
 } from '../shared/config';
 import { longStressFilename, longStressReport, type LongStressState } from '../shared/long-stress';
+import type { GuardStats } from '../shared/stats';
 import type { DebugMetrics, PopupRequest, PopupResponse } from '../shared/types';
 
 declare const __CSG_DEBUG_BUILD__: boolean;
@@ -42,7 +43,15 @@ const sessionState = element<HTMLElement>('sessionState');
 const activeHistory = element<HTMLElement>('activeHistory');
 const domBudgetState = element<HTMLElement>('domBudgetState');
 const warning = element<HTMLElement>('warning');
-const metricsList = element<HTMLDListElement>('metrics');
+const metricsList = __CSG_DEBUG_BUILD__ ? element<HTMLDListElement>('metrics') : null;
+const statsSessionOpen = element<HTMLElement>('statsSessionOpen');
+const statsSingleFlight = element<HTMLElement>('statsSingleFlight');
+const statsOlderSuppressed = element<HTMLElement>('statsOlderSuppressed');
+const stats429 = element<HTMLElement>('stats429');
+const statsFlapping = element<HTMLElement>('statsFlapping');
+const statsDetails = element<HTMLDListElement>('statsDetails');
+const resetStatsButton = element<HTMLButtonElement>('resetStats');
+const statsStatus = element<HTMLElement>('statsStatus');
 
 let config: GuardConfig = DEFAULT_CONFIG;
 
@@ -80,6 +89,15 @@ async function getMetrics(): Promise<DebugMetrics | null> {
   return (await sendToActiveTab({ type: 'csg:get-state' }))?.metrics ?? null;
 }
 
+async function loadStats(): Promise<GuardStats | null> {
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'csg:stats-get' }) as { state?: GuardStats } | undefined;
+    return response?.state ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function matchingPreset(): string {
   const exact = `${config.historyUnit}:${config.historyCount}`;
   return new Set(['message:1', 'round:1', 'round:2', 'round:4', 'round:8', 'round:16']).has(exact)
@@ -96,54 +114,103 @@ function renderConfig(): void {
   historyBatchSize.value = String(config.historyBatchSize);
   autoLoadHistory.value = String(config.autoLoadHistory);
   autoLoadHistory.disabled = config.mode === 'ultra-lite';
-  statusText.textContent = `Status: ${config.enabled ? 'ON' : 'OFF'}`;
+  statusText.textContent = `状态：${config.enabled ? '已启用' : '已停用'}`;
   statusDot.classList.toggle('off', !config.enabled);
-  toggleButton.textContent = config.enabled ? 'Disable' : 'Enable';
-  fullHistoryButton.textContent = config.temporaryFullHistory ? 'Restore Lightweight Mode' : 'Temporary Full History';
+  toggleButton.textContent = config.enabled ? '停用' : '启用';
+  fullHistoryButton.textContent = config.temporaryFullHistory ? '恢复轻量模式' : '临时显示完整历史';
   warning.hidden = config.mode !== 'aggressive';
-  domBudgetState.textContent = `Auto · ${Math.round(config.domBudget / 1000)}k`;
+  domBudgetState.textContent = `自动 · ${Math.round(config.domBudget / 1000)}k`;
 }
 
 function renderMetrics(metrics: DebugMetrics | null): void {
-  metricsList.replaceChildren();
+  metricsList?.replaceChildren();
   if (!metrics) {
-    sessionState.textContent = 'Unavailable';
+    sessionState.textContent = '不可用';
     activeHistory.textContent = '—';
     return;
   }
 
-  if (!metrics.conversationId) sessionState.textContent = 'No active chat';
-  else if (metrics.activeConversationDomNodes <= config.domBudget) sessionState.textContent = 'Clean';
-  else sessionState.textContent = 'Pressure';
+  if (!metrics.conversationId) sessionState.textContent = '未打开会话';
+  else if (metrics.activeConversationDomNodes <= config.domBudget) sessionState.textContent = '正常';
+  else sessionState.textContent = '压力较高';
 
-  const unit = metrics.historyUnit === 'message' ? 'messages' : 'rounds';
+  const unit = metrics.historyUnit === 'message' ? '条消息' : '轮';
   const active = metrics.historyUnit === 'message' ? metrics.renderedMessages : metrics.renderedRounds;
-  activeHistory.textContent = `${active} / ${metrics.configuredHistoryCount} ${unit}${metrics.limitedByDomBudget ? ' · budget-limited' : ''}`;
+  activeHistory.textContent = `${active} / ${metrics.configuredHistoryCount} ${unit}${metrics.limitedByDomBudget ? ' · 受 DOM 预算限制' : ''}`;
 
+  if (!metricsList) return;
   const rows: Array<[string, string]> = [
     ['Conversation ID', metrics.conversationId ?? '—'],
-    ['SPA switches', String(metrics.spaSwitchCount)],
-    ['Rendered rounds', `${metrics.renderedRounds} / ${metrics.totalRounds}`],
-    ['Rendered messages', `${metrics.renderedMessages} / ${metrics.totalMessages}`],
-    ['History target', `${metrics.configuredHistoryCount} ${metrics.historyUnit}${metrics.limitedByDomBudget ? ' · budget-limited' : ''}`],
-    ['Conversation DOM', String(metrics.conversationDomNodes)],
-    ['Active DOM', String(metrics.activeConversationDomNodes)],
-    ['Document DOM', String(metrics.totalDocumentDomNodes)],
+    ['SPA 切换', String(metrics.spaSwitchCount)],
+    ['已渲染轮次', `${metrics.renderedRounds} / ${metrics.totalRounds}`],
+    ['已渲染消息', `${metrics.renderedMessages} / ${metrics.totalMessages}`],
+    ['历史目标', `${metrics.configuredHistoryCount} ${metrics.historyUnit}${metrics.limitedByDomBudget ? ' · budget-limited' : ''}`],
+    ['会话 DOM', String(metrics.conversationDomNodes)],
+    ['活跃 DOM', String(metrics.activeConversationDomNodes)],
+    ['文档 DOM', String(metrics.totalDocumentDomNodes)],
     ['Network Guard', metrics.networkMode],
-    ['Network turns', metrics.networkRequestedTurns === null ? 'n/a' : `${metrics.networkRequestedTurns} → ${metrics.networkEffectiveTurns ?? metrics.networkRequestedTurns}`],
-    ['Cleanup count', String(metrics.cleanupCount)],
-    ['Hard switches', String(metrics.hardSwitchCount)],
-    ['Switch latency', metrics.switchLatencyMs === null ? 'n/a' : `${metrics.switchLatencyMs} ms`],
-    ['JS heap', metrics.jsHeapMb === null ? 'n/a' : `${metrics.jsHeapMb} MB`]
+    ['网络轮次', metrics.networkRequestedTurns === null ? 'n/a' : `${metrics.networkRequestedTurns} → ${metrics.networkEffectiveTurns ?? metrics.networkRequestedTurns}`],
+    ['清理次数', String(metrics.cleanupCount)],
+    ['Hard Switch 次数', String(metrics.hardSwitchCount)],
+    ['切换延迟', metrics.switchLatencyMs === null ? 'n/a' : `${metrics.switchLatencyMs} ms`],
+    ['JS 堆内存', metrics.jsHeapMb === null ? 'n/a' : `${metrics.jsHeapMb} MB`]
   ];
 
+  appendRows(metricsList, rows);
+}
+
+function appendRows(list: HTMLDListElement, rows: Array<[string, string]>): void {
   for (const [key, value] of rows) {
     const dt = document.createElement('dt');
     const dd = document.createElement('dd');
     dt.textContent = key;
     dd.textContent = value;
-    metricsList.append(dt, dd);
+    list.append(dt, dd);
   }
+}
+
+function formatTimestamp(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '—';
+  return new Date(value).toLocaleString('zh-CN', { hour12: false });
+}
+
+function formatLatency(value: number | null): string {
+  return value === null ? '样本不足' : `${value} ms`;
+}
+
+function renderStats(stats: GuardStats | null): void {
+  statsDetails.replaceChildren();
+  if (!stats) {
+    statsSessionOpen.textContent = '—';
+    statsSingleFlight.textContent = '—';
+    statsOlderSuppressed.textContent = '—';
+    stats429.textContent = '—';
+    statsFlapping.textContent = '—';
+    statsStatus.textContent = '本地统计暂时不可用。';
+    return;
+  }
+
+  statsSessionOpen.textContent = String(stats.sessionOpenAttemptCount);
+  statsSingleFlight.textContent = String(stats.singleFlightHitCount);
+  statsOlderSuppressed.textContent = String(stats.olderPageSuppressedCount);
+  stats429.textContent = String(stats.failedOpen429Count);
+  statsFlapping.textContent = String(stats.windowFlappingDetectedCount);
+  statsStatus.textContent = '';
+
+  appendRows(statsDetails, [
+    ['成功打开会话', String(stats.sessionOpenSuccessCount)],
+    ['真实历史网络请求', String(stats.historyRequestCount)],
+    ['429 冷却启动', String(stats.rateLimitCooldownStartCount)],
+    ['429 冷却期阻止重试', String(stats.rateLimitCooldownHitCount)],
+    ['SPA 切换', String(stats.spaSwitchCount)],
+    ['切换延迟 p50', formatLatency(stats.switchLatencyP50)],
+    ['切换延迟 p95', formatLatency(stats.switchLatencyP95)],
+    ['最大活跃会话 DOM', String(stats.maxActiveConversationDomNodes)],
+    ['最大文档 DOM', String(stats.maxDocumentDomNodes)],
+    ['首次统计', formatTimestamp(stats.firstSeenAt)],
+    ['最近更新', formatTimestamp(stats.lastUpdatedAt)],
+    ['Build ID', stats.buildId]
+  ]);
 }
 
 function downloadText(filename: string, content: string, mime: string): void {
@@ -186,6 +253,17 @@ function currentBenchmarkSample(state: BenchmarkState) {
   return mode ? state.results[mode].samples.at(-1) ?? null : null;
 }
 
+function benchmarkModeLabel(value: string): string {
+  const labels: Record<string, string> = {
+    control: 'Control',
+    safe: '安全',
+    balanced: '均衡',
+    'ultra-lite': '极简',
+    aggressive: '激进'
+  };
+  return labels[value] ?? value;
+}
+
 function setupBenchmarkUi(): void {
   if (!__CSG_DEBUG_BUILD__) return;
   const profile = element<HTMLSelectElement>('benchmarkProfile');
@@ -224,26 +302,26 @@ function setupBenchmarkUi(): void {
     const active = state ? activeStatuses.has(state.status) : false;
     const currentMode = state?.phase === 'session-gc'
       ? 'Session GC'
-      : state?.modeOrder[Math.min(state.modeIndex, state.modeOrder.length - 1)] ?? 'Idle';
+      : benchmarkModeLabel(state?.modeOrder[Math.min(state.modeIndex, state.modeOrder.length - 1)] ?? '空闲');
     conversations.textContent = state ? String(state.conversationIds.length) : '—';
     mode.textContent = currentMode;
     progress.textContent = state ? `${state.currentSwitch} / ${state.switchesPerMode}` : `0 / ${Number(loops.value) * 10}`;
     dom.textContent = sample ? String(sample.documentDomNodes) : '—';
     heap.textContent = sample?.jsHeapMb === null || sample?.jsHeapMb === undefined ? '—' : `${sample.jsHeapMb.toFixed(1)} MB`;
     latency.textContent = sample?.switchLatencyMs === null || sample?.switchLatencyMs === undefined ? '—' : `${sample.switchLatencyMs.toFixed(1)} ms`;
-    message.textContent = state?.pauseReason ?? (
-      state?.status === 'complete'
-        ? `Benchmark complete · ${state.conclusion ?? 'inconclusive'}`
-        : state?.status === 'stopped'
-          ? 'Benchmark stopped.'
+    message.textContent = state?.status === 'complete'
+      ? '性能测试已完成，可以导出结果。'
+      : state?.status === 'stopped'
+        ? '性能测试已停止。'
+        : state?.status === 'failed'
+          ? '性能测试失败，请导出诊断数据进一步排查。'
           : active
-            ? 'Benchmark is running automatically. Avoid interacting with ChatGPT until it finishes.'
+            ? '性能测试正在自动运行，请暂时不要操作 ChatGPT。'
             : profile.value === 'experimental'
-              ? 'Experimental profile runs Aggressive only. Session GC stays separate.'
-              : 'Standard Validation compares Control, Balanced and Ultra Lite. Hard Switch stays off.'
-    );
+              ? '实验配置只测试激进模式；Session GC 保持独立。'
+              : '标准验证会比较 Control、均衡和极简；Hard Switch 保持关闭。';
     start.hidden = active;
-    start.textContent = state && ['complete', 'stopped', 'failed'].includes(state.status) ? 'Start New Benchmark' : 'Start Benchmark';
+    start.textContent = state && ['complete', 'stopped', 'failed'].includes(state.status) ? '开始新的性能测试' : '开始性能测试';
     stop.hidden = !active;
     resume.hidden = state?.status !== 'paused-user';
     downloads.hidden = state?.status !== 'complete';
@@ -266,11 +344,13 @@ function setupBenchmarkUi(): void {
     longStressStart.hidden = stressActive;
     longStressStop.hidden = !stressActive;
     longStressDownloads.hidden = latestLongStress?.status !== 'complete';
-    longStressMessage.textContent = latestLongStress
-      ? latestLongStress.error ?? (latestLongStress.status === 'complete'
-        ? 'Long Conversation Stress complete.'
-        : `Long Stress: step ${Math.min(latestLongStress.stepIndex + 1, 5)} / 5 · ${latestLongStress.status}`)
-      : 'Tests this current long conversation at 8r / 4r / 2r / 1r / 1 message.';
+    longStressMessage.textContent = latestLongStress?.status === 'complete'
+      ? '超长会话压力测试已完成。'
+      : latestLongStress?.status === 'failed'
+        ? '超长会话压力测试失败，请导出诊断数据进一步排查。'
+        : latestLongStress
+          ? `压力测试：步骤 ${Math.min(latestLongStress.stepIndex + 1, 5)} / 5 · ${latestLongStress.status}`
+          : '在当前超长会话中依次测试 8 轮 / 4 轮 / 2 轮 / 1 轮 / 1 条消息。';
   };
   loops.addEventListener('change', () => {
     if (!latestState || !activeStatuses.has(latestState.status)) progress.textContent = `0 / ${Number(loops.value) * 10}`;
@@ -278,12 +358,12 @@ function setupBenchmarkUi(): void {
   profile.addEventListener('change', () => render(latestState));
 
   start.addEventListener('click', async () => {
-    message.textContent = 'Starting benchmark…';
+    message.textContent = '正在启动性能测试…';
     const requestedLoops = loops.value === '5' ? 5 : 10;
     const requestedProfile: BenchmarkProfile = profile.value === 'experimental' ? 'experimental' : 'standard';
     const response = await sendToActiveTab({ type: 'csg:benchmark-start', loops: requestedLoops, profile: requestedProfile });
     if (!response?.ok) {
-      message.textContent = response?.error ?? 'Open a logged-in chatgpt.com tab and try again.';
+      message.textContent = response?.error ?? '请打开已登录的 chatgpt.com 标签页后重试。';
       return;
     }
     await refresh();
@@ -292,7 +372,7 @@ function setupBenchmarkUi(): void {
   resume.addEventListener('click', async () => { await sendToActiveTab({ type: 'csg:benchmark-resume' }); await refresh(); });
   sessionGc.addEventListener('click', async () => {
     const response = await sendToActiveTab({ type: 'csg:session-gc-start' });
-    if (!response?.ok) message.textContent = response?.error ?? 'Unable to start Session GC benchmark.';
+    if (!response?.ok) message.textContent = response?.error ?? '无法启动 Session GC 测试。';
     else await refresh();
   });
   json.addEventListener('click', () => {
@@ -306,9 +386,9 @@ function setupBenchmarkUi(): void {
     downloadText(benchmarkFilename('benchmark-report', timestamp, 'md'), benchmarkReport(latestState), 'text/markdown;charset=utf-8');
   });
   longStressStart.addEventListener('click', async () => {
-    longStressMessage.textContent = 'Starting Long Conversation Stress…';
+    longStressMessage.textContent = '正在启动超长会话压力测试…';
     const response = await sendToActiveTab({ type: 'csg:long-stress-start' });
-    if (!response?.ok) longStressMessage.textContent = response?.error ?? 'Unable to start Long Conversation Stress.';
+    if (!response?.ok) longStressMessage.textContent = response?.error ?? '无法启动超长会话压力测试。';
     else await refresh();
   });
   longStressStop.addEventListener('click', async () => {
@@ -327,16 +407,16 @@ function setupBenchmarkUi(): void {
   });
   stabilityTraceJson.addEventListener('click', async () => {
     const response = await sendToActiveTab({ type: 'csg:stability-trace-get' });
-    if (!response?.stabilityTrace) { stabilityTraceMessage.textContent = 'No Stability Trace is available on this tab.'; return; }
+    if (!response?.stabilityTrace) { stabilityTraceMessage.textContent = '当前标签页没有可用的窗口稳定性诊断数据。'; return; }
     const snapshot = response.stabilityTrace as { flappingDetected?: boolean };
-    stabilityTraceMessage.textContent = snapshot.flappingDetected ? 'WINDOW_FLAPPING_DETECTED · trace exported.' : 'Stability Trace exported.';
+    stabilityTraceMessage.textContent = snapshot.flappingDetected ? '检测到窗口抖动，诊断 JSON 已导出。' : '诊断 JSON 已导出。';
     downloadText('stability-trace-' + Date.now() + '.json', JSON.stringify(response.stabilityTrace, null, 2), 'application/json;charset=utf-8');
   });
   stabilityTraceReportButton.addEventListener('click', async () => {
     const response = await sendToActiveTab({ type: 'csg:stability-trace-get' });
-    if (!response?.stabilityReport) { stabilityTraceMessage.textContent = 'No Stability Trace report is available on this tab.'; return; }
+    if (!response?.stabilityReport) { stabilityTraceMessage.textContent = '当前标签页没有可用的窗口稳定性诊断报告。'; return; }
     const snapshot = response.stabilityTrace as { flappingDetected?: boolean } | undefined;
-    stabilityTraceMessage.textContent = snapshot?.flappingDetected ? 'WINDOW_FLAPPING_DETECTED · report exported.' : 'Stability report exported.';
+    stabilityTraceMessage.textContent = snapshot?.flappingDetected ? '检测到窗口抖动，诊断报告已导出。' : '诊断报告已导出。';
     downloadText('stability-report-' + Date.now() + '.md', response.stabilityReport, 'text/markdown;charset=utf-8');
   });
 
@@ -381,9 +461,9 @@ historyBatchSize.addEventListener('change', () => {
 });
 
 loadPreviousHistory.addEventListener('click', async () => {
-  historyStatus.textContent = 'Preparing older history…';
+  historyStatus.textContent = '正在准备更早历史…';
   const response = await sendToActiveTab({ type: 'csg:history-load-previous' });
-  if (!response?.ok) historyStatus.textContent = response?.error ?? 'Unable to load older history.';
+  if (!response?.ok) historyStatus.textContent = response?.error ?? '无法加载更早历史。';
 });
 
 toggleButton.addEventListener('click', () => { void saveConfig({ ...config, enabled: !config.enabled }); });
@@ -392,12 +472,34 @@ fullHistoryButton.addEventListener('click', async () => {
     ? { type: 'csg:restore-lightweight' }
     : { type: 'csg:temporary-full-history' };
   const response = await sendToActiveTab(request);
-  if (!response?.ok) historyStatus.textContent = response?.error ?? 'Unable to reload current history mode.';
+  if (!response?.ok) historyStatus.textContent = response?.error ?? '无法重新加载当前历史模式。';
+});
+
+resetStatsButton.addEventListener('click', async () => {
+  const confirmed = window.confirm('确定要重置本地保护统计吗？这不会更改 Session Guard 配置。');
+  if (!confirmed) return;
+  resetStatsButton.disabled = true;
+  statsStatus.textContent = '正在重置本地统计…';
+  try {
+    const response = await chrome.runtime.sendMessage({ type: 'csg:stats-reset' }) as { ok?: boolean; state?: GuardStats } | undefined;
+    if (!response?.ok || !response.state) {
+      statsStatus.textContent = '重置失败，请稍后重试。';
+      return;
+    }
+    renderStats(response.state);
+    statsStatus.textContent = '本地统计已重置，Session Guard 配置未更改。';
+  } catch {
+    statsStatus.textContent = '重置失败，请稍后重试。';
+  } finally {
+    resetStatsButton.disabled = false;
+  }
 });
 
 void (async () => {
   config = await loadConfig();
   renderConfig();
-  renderMetrics(await getMetrics());
+  const [metrics, stats] = await Promise.all([getMetrics(), loadStats()]);
+  renderMetrics(metrics);
+  renderStats(stats);
   setupBenchmarkUi();
 })();

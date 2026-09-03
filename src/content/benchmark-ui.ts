@@ -26,6 +26,18 @@ function latestSample(state: BenchmarkState) {
   return state.results[mode].samples.at(-1) ?? null;
 }
 
+function modeLabel(value: string): string {
+  const labels: Record<string, string> = {
+    control: 'Control',
+    safe: '安全',
+    balanced: '均衡',
+    'ultra-lite': '极简',
+    aggressive: '激进',
+    complete: '完成'
+  };
+  return labels[value] ?? value;
+}
+
 export class BenchmarkStatusUi {
   private root: HTMLDivElement | null = null;
 
@@ -44,27 +56,27 @@ export class BenchmarkStatusUi {
     const sample = latestSample(state);
     const mode = state.phase === 'session-gc'
       ? 'Session GC'
-      : state.modeOrder[Math.min(state.modeIndex, state.modeOrder.length - 1)] ?? 'complete';
+      : modeLabel(state.modeOrder[Math.min(state.modeIndex, state.modeOrder.length - 1)] ?? 'complete');
     const progress = state.status === 'complete'
       ? `${state.switchesPerMode} / ${state.switchesPerMode}`
       : `${state.currentSwitch} / ${state.switchesPerMode}`;
-    const heap = sample?.jsHeapMb === null || sample?.jsHeapMb === undefined ? 'N/A' : `${sample.jsHeapMb.toFixed(1)} MB`;
-    const latency = sample?.switchLatencyMs === null || sample?.switchLatencyMs === undefined ? 'N/A' : `${sample.switchLatencyMs.toFixed(1)} ms`;
-    const busy = state.pauseReason ? `<div class="csg-bench-note">${this.escape(state.pauseReason)}</div>` : '';
+    const heap = sample?.jsHeapMb === null || sample?.jsHeapMb === undefined ? '不可用' : `${sample.jsHeapMb.toFixed(1)} MB`;
+    const latency = sample?.switchLatencyMs === null || sample?.switchLatencyMs === undefined ? '不可用' : `${sample.switchLatencyMs.toFixed(1)} ms`;
+    const busy = state.pauseReason ? '<div class="csg-bench-note">测试已暂停，请确认 ChatGPT 当前没有正在进行的任务后再继续。</div>' : '';
     const recommended = state.results.aggressive.analysis?.spaRetainedStateLikely === true && !state.sessionGc
-      ? '<div class="csg-bench-note">Session GC test recommended.</div>'
+      ? '<div class="csg-bench-note">建议补充运行 Session GC 测试。</div>'
       : '';
 
     root.innerHTML = `
       <div class="csg-bench-title">ChatGPT Session Guard</div>
-      <div class="csg-bench-subtitle">Automatic Real Browser Benchmark</div>
+      <div class="csg-bench-subtitle">真实浏览器自动性能测试</div>
       <div class="csg-bench-grid">
-        <span>Conversations</span><strong>${state.conversationIds.length}</strong>
-        <span>Mode</span><strong>${this.escape(mode)}</strong>
-        <span>Progress</span><strong>${progress}</strong>
-        <span>DOM</span><strong>${sample?.documentDomNodes ?? 'N/A'}</strong>
-        <span>Heap</span><strong>${heap}</strong>
-        <span>Latency</span><strong>${latency}</strong>
+        <span>会话数</span><strong>${state.conversationIds.length}</strong>
+        <span>模式</span><strong>${this.escape(mode)}</strong>
+        <span>进度</span><strong>${progress}</strong>
+        <span>DOM</span><strong>${sample?.documentDomNodes ?? '不可用'}</strong>
+        <span>堆内存</span><strong>${heap}</strong>
+        <span>切换延迟</span><strong>${latency}</strong>
       </div>
       ${busy}
       ${recommended}
@@ -74,7 +86,7 @@ export class BenchmarkStatusUi {
     const actions = root.querySelector<HTMLDivElement>('.csg-bench-actions');
     if (!actions) return;
     if (state.status === 'complete' || state.status === 'failed' || state.status === 'stopped') {
-      const jsonButton = this.button('Download JSON', () => {
+      const jsonButton = this.button('导出 JSON', () => {
         const timestamp = state.completedAt ?? Date.now();
         downloadText(
           benchmarkFilename('benchmark-results', timestamp, 'json'),
@@ -82,7 +94,7 @@ export class BenchmarkStatusUi {
           'application/json;charset=utf-8'
         );
       });
-      const reportButton = this.button('Download Report', () => {
+      const reportButton = this.button('导出报告', () => {
         const timestamp = state.completedAt ?? Date.now();
         downloadText(
           benchmarkFilename('benchmark-report', timestamp, 'md'),
@@ -92,15 +104,15 @@ export class BenchmarkStatusUi {
       });
       actions.append(jsonButton, reportButton);
       if (state.results.aggressive.analysis?.spaRetainedStateLikely === true && !state.sessionGc) {
-        actions.append(this.button('Run Session GC Benchmark', this.onSessionGc));
+        actions.append(this.button('运行 Session GC 测试', this.onSessionGc));
       }
       return;
     }
 
     if (state.status === 'paused-user') {
-      actions.append(this.button('Resume Benchmark', this.onResume));
+      actions.append(this.button('继续测试', this.onResume));
     }
-    actions.append(this.button('Stop Benchmark', this.onStop));
+    actions.append(this.button('停止测试', this.onStop));
   }
 
   remove(): void {

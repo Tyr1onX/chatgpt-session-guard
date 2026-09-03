@@ -62,6 +62,7 @@ export class SessionController {
   private readonly navigation: NavigationObserver;
   private readonly onMetrics: ((metrics: DebugMetrics) => void) | undefined;
   private readonly onTrace: ((event: SessionTraceEvent) => void) | undefined;
+  private readonly onEvaluationStats: ((conversationId: string | null, dom: DomWindowStats) => void) | undefined;
   private globalAbort: AbortController | null = null;
   private scopeObserver: MutationObserver | null = null;
   private scopeTimer: number | null = null;
@@ -84,11 +85,13 @@ export class SessionController {
   constructor(
     config: GuardConfig,
     onMetrics?: (metrics: DebugMetrics) => void,
-    onTrace?: (event: SessionTraceEvent) => void
+    onTrace?: (event: SessionTraceEvent) => void,
+    onEvaluationStats?: (conversationId: string | null, dom: DomWindowStats) => void
   ) {
     this.config = config;
     this.onMetrics = onMetrics;
     this.onTrace = onTrace;
+    this.onEvaluationStats = onEvaluationStats;
     this.navigation = new NavigationObserver(
       (conversationId) => this.onNavigation(conversationId),
       () => this.onSameConversationMutation()
@@ -220,6 +223,7 @@ export class SessionController {
     const started = performance.now();
     const dom = this.domWindow.apply(this.config, this.currentConversationId);
     const duration = Math.round((performance.now() - started) * 100) / 100;
+    this.onEvaluationStats?.(this.currentConversationId, dom);
     this.lastGenerationActive = dom.generationActive;
     const switchLatency = this.consumeSwitchLatency();
     if (switchLatency !== null) this.lastSwitchLatencyMs = switchLatency;

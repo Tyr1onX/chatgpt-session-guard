@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "ChatGPT Session Guard",
   "version": "0.1.0",
-  "description": "Keeps long-running ChatGPT Web sessions lighter by limiting the browser rendering working set.",
+  "description": "让超长 ChatGPT 会话保持轻量，降低浏览器 DOM、历史加载和重复请求压力。",
   "permissions": ["storage"],
   "host_permissions": ["https://chatgpt.com/*"],
   "background": {

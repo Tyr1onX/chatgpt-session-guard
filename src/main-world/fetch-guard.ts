@@ -1,5 +1,5 @@
 import { historyTarget, normalizeConfig, type GuardConfig } from '../shared/config';
-import { EVENTS, dispatchStringEvent, parseStringEvent, type NetworkStatus } from '../shared/events';
+import { EVENTS, dispatchStringEvent, parseStringEvent, type GuardStatsEvent, type NetworkStatus } from '../shared/events';
 import { installDebugHelper } from './debug-helper';
 import { trimLegacyConversation } from './legacy-adapter';
 import {
@@ -87,6 +87,10 @@ function emitNetworkStatus(status: NetworkStatus): void {
 
 function emitNetworkTrace(event: NetworkTraceEvent): void {
   dispatchStringEvent('csg:stability-network-trace', event);
+}
+
+function emitStats(type: GuardStatsEvent['type']): void {
+  dispatchStringEvent(EVENTS.stats, { type } satisfies GuardStatsEvent);
 }
 
 function isJsonResponse(response: Response): boolean {
@@ -229,6 +233,7 @@ export function createGuardedFetch(
     }
 
     if (classification.kind === 'paginated-conversation-page' && shouldPreflightSuppressOlderHistory(classification, config)) {
+      emitStats('older-page-suppressed');
       statusSink({ mode: 'paginated', modified: true });
       if (__CSG_DEBUG_BUILD__ && traceSink) {
         const now = performance.now();

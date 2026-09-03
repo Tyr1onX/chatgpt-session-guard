@@ -1,5 +1,5 @@
 import type { GuardConfig } from '../shared/config';
-import { dispatchStringEvent } from '../shared/events';
+import { EVENTS, dispatchStringEvent, type GuardStatsEvent } from '../shared/events';
 import { classifyRequest } from './request-classifier';
 
 declare const __CSG_DEBUG_BUILD__: boolean;
@@ -19,6 +19,7 @@ interface RateLimitCooldown {
 }
 
 type ProtectionKind = 'single-flight-hit' | 'rate-limit-cooldown-start' | 'rate-limit-cooldown-hit';
+type HistoryClassification = NonNullable<ReturnType<typeof classifyHistoryRequest>>;
 
 function classifyHistoryRequest(args: Parameters<typeof fetch>) {
   const [input, init] = args;
@@ -28,6 +29,25 @@ function classifyHistoryRequest(args: Parameters<typeof fetch>) {
   } catch {
     return null;
   }
+}
+
+function emitStats(type: GuardStatsEvent['type']): void {
+  dispatchStringEvent(EVENTS.stats, { type } satisfies GuardStatsEvent);
+}
+
+function isSessionOpenRequest(classification: HistoryClassification): boolean {
+  return classification.kind === 'legacy-conversation' || classification.kind === 'paginated-conversation-history';
+}
+
+function emitHistoryRequestStats(classification: HistoryClassification): void {
+  emitStats('history-request');
+  if (isSessionOpenRequest(classification)) emitStats('session-open-attempt');
+}
+
+function emitHistoryResponseStats(classification: HistoryClassification, response: Response): void {
+  if (!isSessionOpenRequest(classification)) return;
+  if (response.status === 429) emitStats('failed-open-429');
+  else if (response.ok) emitStats('session-open-success');
 }
 
 function emitProtectionTrace(
@@ -127,6 +147,7 @@ export function createHistorySingleFlightFetch(
       expiresAt: timestamp + cooldownMs
     });
     emitProtectionTrace(args, 'rate-limit-cooldown-start', cooldownMs);
+    emitStats('rate-limit-cooldown-start');
   };
 
   return async (...args: Parameters<typeof fetch>): Promise<Response> => {
@@ -139,27 +160,39 @@ export function createHistorySingleFlightFetch(
       return nativeFetch(...args);
     }
 
+    const classification = classifyHistoryRequest(args);
+    if (!classification) return nativeFetch(...args);
+
     const key = requestFingerprint(args);
-    if (!key) return nativeFetch(...args);
+    if (!key) {
+      emitHistoryRequestStats(classification);
+      const response = await nativeFetch(...args);
+      emitHistoryResponseStats(classification, response);
+      return response;
+    }
 
     const timestamp = now();
     pruneCooldowns(timestamp);
     const cooldown = rateLimitCooldowns.get(key);
     if (cooldown && cooldown.expiresAt > timestamp) {
       emitProtectionTrace(args, 'rate-limit-cooldown-hit', cooldown.expiresAt - timestamp);
+      emitStats('rate-limit-cooldown-hit');
       return cooldown.response.clone();
     }
 
     let shared = inFlight.get(key);
     if (shared) {
       emitProtectionTrace(args, 'single-flight-hit');
+      emitStats('single-flight-hit');
     } else {
+      emitHistoryRequestStats(classification);
       shared = nativeFetch(...args);
       inFlight.set(key, shared);
       const owned = shared;
       void owned.then(
         (response) => {
           if (inFlight.get(key) === owned) inFlight.delete(key);
+          emitHistoryResponseStats(classification, response);
           if (response.status === 429) rememberRateLimit(key, response, now(), args);
           else rateLimitCooldowns.delete(key);
         },

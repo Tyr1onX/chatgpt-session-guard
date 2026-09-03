@@ -5,8 +5,9 @@ import {
   persistentConfig,
   type GuardConfig
 } from '../shared/config';
-import { EVENTS, dispatchStringEvent, parseStringEvent, type DebugCommand } from '../shared/events';
+import { EVENTS, dispatchStringEvent, parseStringEvent, type DebugCommand, type GuardStatsEvent } from '../shared/events';
 import { EMPTY_METRICS, type DebugMetrics, type PopupRequest, type PopupResponse } from '../shared/types';
+import type { NetworkTraceEvent } from '../main-world/fetch-guard';
 import { AutomaticBenchmarkRunner } from './benchmark-runner';
 import { BenchmarkStatusUi } from './benchmark-ui';
 import { clearHistoryExpansion, loadHistoryExpansion, saveHistoryExpansion, type HistoryExpansionState } from './history-session';
@@ -14,8 +15,8 @@ import { hasUnsafeInteractiveState } from './hard-switch';
 import { LongConversationStressRunner } from './long-stress-runner';
 import { extractConversationId } from './navigation-observer';
 import { SessionController } from './session-controller';
+import { LocalStatsBridge } from './stats-bridge';
 import { StabilityTraceCollector, stabilityTraceReport } from './stability-trace';
-import type { NetworkTraceEvent } from '../main-world/fetch-guard';
 
 declare const __CSG_DEBUG_BUILD__: boolean;
 
@@ -25,6 +26,7 @@ let controller: SessionController | null = null;
 let benchmarkRunner: AutomaticBenchmarkRunner | null = null;
 let benchmarkUi: BenchmarkStatusUi | null = null;
 let longStressRunner: LongConversationStressRunner | null = null;
+const statsBridge = new LocalStatsBridge();
 const stabilityTrace = __CSG_DEBUG_BUILD__ ? new StabilityTraceCollector() : null;
 const STABILITY_NETWORK_TRACE_EVENT = 'csg:stability-network-trace';
 
@@ -71,8 +73,8 @@ async function loadConfig(): Promise<GuardConfig> {
 
 async function loadPreviousHistory(): Promise<{ ok: boolean; error?: string }> {
   const conversationId = currentConversationId();
-  if (!conversationId) return { ok: false, error: 'Open a normal ChatGPT conversation first.' };
-  if (hasUnsafeInteractiveState()) return { ok: false, error: 'ChatGPT is busy. Finish the active task before reloading older history.' };
+  if (!conversationId) return { ok: false, error: '请先打开一个正常的 ChatGPT 会话。' };
+  if (hasUnsafeInteractiveState()) return { ok: false, error: 'ChatGPT 正在处理任务，请等待当前任务结束后再加载更早历史。' };
 
   const previous = historyExpansion?.conversationId === conversationId ? historyExpansion.amount : 0;
   historyExpansion = { conversationId, amount: Math.min(200, previous + config.historyBatchSize) };
@@ -85,7 +87,7 @@ async function loadPreviousHistory(): Promise<{ ok: boolean; error?: string }> {
 }
 
 async function enableTemporaryFullHistory(): Promise<{ ok: boolean; error?: string }> {
-  if (hasUnsafeInteractiveState()) return { ok: false, error: 'ChatGPT is busy. Finish the active task before reloading full history.' };
+  if (hasUnsafeInteractiveState()) return { ok: false, error: 'ChatGPT 正在处理任务，请等待当前任务结束后再显示完整历史。' };
   historyExpansion = null;
   await clearHistoryExpansion();
   await saveConfig({ ...config, temporaryFullHistory: true });
@@ -94,7 +96,7 @@ async function enableTemporaryFullHistory(): Promise<{ ok: boolean; error?: stri
 }
 
 async function restoreLightweightMode(): Promise<{ ok: boolean; error?: string }> {
-  if (hasUnsafeInteractiveState()) return { ok: false, error: 'ChatGPT is busy. Finish the active task before restoring lightweight mode.' };
+  if (hasUnsafeInteractiveState()) return { ok: false, error: 'ChatGPT 正在处理任务，请等待当前任务结束后再恢复轻量模式。' };
   historyExpansion = null;
   await clearHistoryExpansion();
   await saveConfig({ ...config, temporaryFullHistory: false });
@@ -113,6 +115,13 @@ function setupHistoryEvents(): void {
     const runtime = runtimeConfig();
     dispatchStringEvent(EVENTS.config, runtime);
     controller?.updateConfig(runtime);
+  });
+}
+
+function setupStatsEvents(): void {
+  window.addEventListener(EVENTS.stats, (event) => {
+    const statsEvent = parseStringEvent<GuardStatsEvent>(event);
+    if (statsEvent) statsBridge.recordEvent(statsEvent);
   });
 }
 
@@ -195,7 +204,10 @@ function setupRuntimeMessages(): void {
     if (!__CSG_DEBUG_BUILD__ || !benchmarkRunner) return false;
     if (request.type === 'csg:benchmark-start') {
       const stress = longStressRunner?.getState();
-      if (stress && ['preparing', 'reloading', 'measuring'].includes(stress.status)) { sendResponse({ ok: false, error: 'Long Conversation Stress is already running.' }); return false; }
+      if (stress && ['preparing', 'reloading', 'measuring'].includes(stress.status)) {
+        sendResponse({ ok: false, error: '超长会话压力测试正在运行。' });
+        return false;
+      }
       const loops = request.loops === 5 ? 5 : 10;
       const profile = request.profile === 'experimental' ? 'experimental' : 'standard';
       void (async () => {
@@ -220,12 +232,15 @@ function setupRuntimeMessages(): void {
     }
     if (request.type === 'csg:long-stress-start') {
       const benchmark = benchmarkRunner.getState();
-      if (benchmark && ['preparing', 'reloading', 'running', 'paused-busy', 'paused-user', 'retrying'].includes(benchmark.status)) { sendResponse({ ok: false, error: 'Automatic switch benchmark is already running.' }); return false; }
-      if (!longStressRunner) { sendResponse({ ok: false, error: 'Long Conversation Stress is unavailable.' }); return false; }
+      if (benchmark && ['preparing', 'reloading', 'running', 'paused-busy', 'paused-user', 'retrying'].includes(benchmark.status)) {
+        sendResponse({ ok: false, error: '自动切换性能测试正在运行。' });
+        return false;
+      }
+      if (!longStressRunner) { sendResponse({ ok: false, error: '超长会话压力测试当前不可用。' }); return false; }
       void (async () => {
         historyExpansion = null;
         await clearHistoryExpansion();
-        const result = await longStressRunner?.start() ?? { ok: false, error: 'Long Conversation Stress is unavailable.' };
+        const result = await longStressRunner?.start() ?? { ok: false, error: '超长会话压力测试当前不可用。' };
         sendResponse(result);
       })();
       return true;
@@ -242,6 +257,7 @@ function setupRuntimeMessages(): void {
 async function init(): Promise<void> {
   window.addEventListener(EVENTS.requestConfig, sendConfigToMainWorld);
   setupDebugCommands();
+  setupStatsEvents();
   setupStabilityTrace();
   setupHistoryEvents();
 
@@ -251,8 +267,12 @@ async function init(): Promise<void> {
 
   controller = new SessionController(
     runtimeConfig(),
-    __CSG_DEBUG_BUILD__ ? sendDebugMetrics : undefined,
-    __CSG_DEBUG_BUILD__ ? (event) => stabilityTrace?.addSession(event) : undefined
+    (metrics) => {
+      statsBridge.observeMetrics(metrics);
+      sendDebugMetrics(metrics);
+    },
+    __CSG_DEBUG_BUILD__ ? (event) => stabilityTrace?.addSession(event) : undefined,
+    (conversationId, dom) => statsBridge.observeEvaluation(conversationId, dom)
   );
   controller.start();
   setupBenchmark();
@@ -270,6 +290,7 @@ async function init(): Promise<void> {
   window.addEventListener('pagehide', () => {
     benchmarkRunner?.destroy();
     controller?.destroy();
+    statsBridge.destroy();
   }, { once: true });
 }
 
