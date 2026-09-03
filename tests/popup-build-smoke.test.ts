@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-const popupHtml = readFileSync(new URL('../extension/popup.html', import.meta.url), 'utf8');
-const manifest = JSON.parse(readFileSync(new URL('../extension/manifest.json', import.meta.url), 'utf8')) as { description?: string; version?: string };
+const popupHtml = readFileSync(resolve(process.cwd(), 'extension/popup.html'), 'utf8');
+const manifest = JSON.parse(readFileSync(resolve(process.cwd(), 'extension/manifest.json'), 'utf8')) as { description?: string; version?: string };
 
 function productionPopup(source: string): string {
   return source.replace(/\s*<!-- CSG_DEBUG_START -->[\s\S]*?<!-- CSG_DEBUG_END -->\s*/g, '\n');
