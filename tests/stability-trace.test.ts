@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { StabilityTraceCollector, stabilityTraceReport } from '../src/content/stability-trace';
 import type { SessionTraceEvent } from '../src/content/session-controller';
 import type { NetworkTraceEvent } from '../src/main-world/fetch-guard';
@@ -36,6 +36,11 @@ function evaluate(timestamp: number, boundaryIndex: number, hiddenRounds: number
   };
 }
 
+afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
+
 describe('stability trace', () => {
   it('detects alternating boundary/scroll-height window flapping', () => {
     vi.spyOn(Date, 'now').mockReturnValue(5000);
@@ -50,7 +55,6 @@ describe('stability trace', () => {
     expect(snapshot.flappingReasons).toContain('boundary-alternation');
     expect(snapshot.flappingReasons).toContain('hidden-round-alternation');
     expect(snapshot.flappingReasons).toContain('scroll-height-alternation');
-    vi.restoreAllMocks();
   });
 
   it('summarizes evaluate p95/max and heavy parse without conversation text', () => {
@@ -120,5 +124,49 @@ describe('stability trace', () => {
     const report = stabilityTraceReport(snapshot);
     expect(report).toContain('Concurrent history requests coalesced: 2');
     expect(report).toContain('Retries blocked by 429 cooldown: 1');
+  });
+
+  it('persists and restores failed-open 429 without successful /c/:id navigation', async () => {
+    const localStorage: Record<string, unknown> = {};
+    vi.stubGlobal('chrome', {
+      storage: {
+        local: {
+          get: vi.fn(async (key: string) => ({ [key]: localStorage[key] })),
+          set: vi.fn(async (items: Record<string, unknown>) => {
+            Object.assign(localStorage, items);
+          })
+        }
+      }
+    });
+
+    const failedOpen: NetworkTraceEvent = {
+      timestamp: Date.now(),
+      type: 'history-request',
+      kind: 'paginated-conversation-history',
+      conversationId: 'target-conversation',
+      pathname: '/backend-api/conversations/target-conversation',
+      queryKeys: ['num_turns'],
+      status: 429,
+      preflightSuppressed: false
+    };
+
+    const first = new StabilityTraceCollector();
+    first.addNetwork(failedOpen);
+    expect(first.snapshot().sessionEvents).toHaveLength(0);
+    expect(first.snapshot().alerts).toContain('HISTORY_REQUEST_429');
+
+    await vi.waitFor(() => {
+      expect(Object.keys(localStorage)).toHaveLength(1);
+    });
+
+    const restored = new StabilityTraceCollector();
+    await vi.waitFor(() => {
+      expect(restored.snapshot().summary.restoredLastFailedOpen).toBe(true);
+    });
+    const snapshot = restored.snapshot();
+    expect(snapshot.sessionEvents).toHaveLength(0);
+    expect(snapshot.summary.rateLimitedHistoryRequestCount).toBe(1);
+    expect(snapshot.networkEvents[0]?.conversationId).toBe('target-conversation');
+    expect(snapshot.alerts).toContain('LAST_FAILED_OPEN_RESTORED');
   });
 });
