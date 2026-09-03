@@ -1,5 +1,24 @@
 # Real Chrome / Chromium Smoke Harness
 
+## 最简单的使用方式
+
+Windows：直接双击仓库根目录的 `start-smoke.cmd`。
+
+第一次只需要做两件事：
+
+1. 在自动打开的独立测试 Chromium 中正常登录 ChatGPT。
+2. 登录后，在左侧历史记录中点开一个很长、容易出现问题的旧聊天。
+
+程序会自动检测登录、识别 `/c/<conversation-id>`、保存本地绑定、配置 Ultra Lite / 1 round / Manual only，然后立即开始 Scroll Containment Smoke。无需手动滚动、复制会话 ID 或导日志。
+
+以后再次测试只需要再次双击 `start-smoke.cmd`。也可以从终端使用：
+
+```bash
+npm run smoke:auto
+```
+
+依赖缺失时 Bootstrap 会自动执行 `npm ci`，并且只安装 Playwright Chromium。测试失败或安全中止时会在最新 artifacts 目录生成一个仅包含脱敏证据的 `session-guard-smoke-<run-id>.zip`，终端会直接提示把该 ZIP 发给 GPT。`.csg-smoke/latest-run.txt` 指向最近一次运行目录。
+
 This harness validates ChatGPT Session Guard against the real `chatgpt.com` UI in a dedicated Playwright Chromium profile. It is intentionally local-only and read-only by default.
 
 ## Why the browser profile is isolated

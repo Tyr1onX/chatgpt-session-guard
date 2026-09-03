@@ -22,6 +22,7 @@ import { SanitizedNetworkMonitor } from './network-monitor.mjs';
 import { createRunSalt, sanitizeForEvidence } from './sanitizer.mjs';
 import { buildSmokeReport, createTestResult } from './report.mjs';
 import { captureMaskedFailureScreenshot, writeSmokeArtifacts } from './evidence.mjs';
+import { createSupportZip, openArtifactDirectory, resultActions, writeLatestRun } from './support-bundle.mjs';
 
 const HARD_SCROLL_LIMIT = 25;
 const DEFAULT_SCROLL_ATTEMPTS = 12;
@@ -42,6 +43,7 @@ function safetyStatus(code) {
 const args = new Set(process.argv.slice(2));
 const headed = args.has('--headed');
 const extended = args.has('--extended');
+const autoUx = args.has('--auto-ux');
 const requestedAttemptsArg = process.argv.find((item) => item.startsWith('--scroll-attempts='));
 const requestedAttempts = requestedAttemptsArg ? Number(requestedAttemptsArg.split('=')[1]) : DEFAULT_SCROLL_ATTEMPTS;
 const scrollAttempts = Math.min(HARD_SCROLL_LIMIT, Math.max(1, Number.isFinite(requestedAttempts) ? Math.round(requestedAttempts) : DEFAULT_SCROLL_ATTEMPTS));
@@ -320,9 +322,25 @@ try {
       stabilityReport,
       salt
     });
-    console.log(`Smoke report: ${path.join(runDir, 'smoke-report.md')}`);
+    await writeLatestRun(runDir, root);
+    const actions = resultActions(report.overallStatus, { autoUx });
+    let supportZip = null;
+    if (actions.createSupportZip) supportZip = await createSupportZip(runDir);
+    if (actions.openArtifacts) await openArtifactDirectory(runDir);
+    console.log('Smoke report: ' + path.join(runDir, 'smoke-report.md'));
+    if (supportZip) {
+      console.log('如果测试失败，请把这个文件直接发送给 GPT：');
+      console.log(supportZip);
+    }
   }
-  console.log(`OVERALL: ${report.overallStatus}`);
+  const resultOf = (id) => tests.find((test) => test.id === id)?.status ?? '未运行';
+  console.log('Session Guard 自动测试完成');
+  console.log('扩展加载：' + resultOf('extension-load'));
+  console.log('中文界面：' + resultOf('chinese-popup'));
+  console.log('极简窗口：' + resultOf('ultra-lite-window'));
+  console.log('向上滚动历史隔离：' + resultOf('ultra-lite-scroll-containment'));
+  if (safetyStops.includes('ABORTED_RATE_LIMIT')) console.log('已检测到 HTTP 429，为避免继续触发限流，测试没有重试。');
+  console.log('结果：' + report.overallStatus);
 
   if (context) await context.close();
   if (report.overallStatus !== 'PASS') process.exitCode = 1;
