@@ -13,7 +13,9 @@ const ALLOWED = new Set([
   'dom-summary.json',
   'stability-trace.json',
   'stability-report.md',
-  'screenshot-failure-masked.png'
+  'screenshot-failure-masked.png',
+  'auth-diagnostic.json',
+  'bootstrap.log'
 ]);
 const FORBIDDEN_NAME = /(cookie|login data|local storage|indexeddb|profile|session|token|\.har$|\.html$)/i;
 

@@ -1,133 +1,211 @@
-# Real Chrome / Chromium Smoke Harness
+# Real Chrome Smoke Harness
 
 ## 最简单的使用方式
 
 Windows：直接双击仓库根目录的 `start-smoke.cmd`。
 
-第一次只需要做两件事：
+第一次只需要：
 
-1. 在自动打开的独立测试 Chromium 中正常登录 ChatGPT。
-2. 登录后，在左侧历史记录中点开一个很长、容易出现问题的旧聊天。
+1. 在自动打开的 **Session Guard 专用 Google Chrome** 中正常完成 Google → ChatGPT 登录；登录成功后关闭这个专用 Chrome。
+2. 随后程序会重新打开专用测试 Chrome；在左侧历史记录中点开一个很长、容易出现问题的旧聊天。
 
-程序会自动检测登录、识别 `/c/<conversation-id>`、保存本地绑定、配置 Ultra Lite / 1 round / Manual only，然后立即开始 Scroll Containment Smoke。无需手动滚动、复制会话 ID 或导日志。
+之后全部自动：
 
-以后再次测试只需要再次双击 `start-smoke.cmd`。也可以从终端使用：
+```text
+构建当前 Debug 扩展
+→ 验证 dedicated Chrome Profile
+→ localhost CDP
+→ 自动加载 dist/ Debug extension
+→ 验证 Build ID
+→ Ultra Lite / 1 round / Manual only
+→ 自动 Scroll Containment Smoke
+→ 输出脱敏证据
+```
+
+以后再次测试只需再次双击 `start-smoke.cmd`。
+
+终端等价入口：
 
 ```bash
 npm run smoke:auto
 ```
 
-依赖缺失时 Bootstrap 会自动执行 `npm ci`，并且只安装 Playwright Chromium。测试失败或安全中止时会在最新 artifacts 目录生成一个仅包含脱敏证据的 `session-guard-smoke-<run-id>.zip`，终端会直接提示把该 ZIP 发给 GPT。`.csg-smoke/latest-run.txt` 指向最近一次运行目录。
+## 为什么认证和自动测试分开
 
-This harness validates ChatGPT Session Guard against the real `chatgpt.com` UI in a dedicated Playwright Chromium profile. It is intentionally local-only and read-only by default.
+Google OAuth 首次认证不能依赖 Playwright Chromium。首次认证阶段使用机器上正常安装的 branded Google Chrome，并使用独立目录：
 
-## Why the browser profile is isolated
+```text
+.csg-smoke/chrome-profile/
+```
 
-The harness never attaches to an existing daily Chrome session. It uses:
+认证阶段：
+
+- 不启用 Playwright 控制；
+- 不启用 CDP；
+- 不使用 `--enable-automation`；
+- 不读取或复制 daily Chrome Cookie；
+- 不自动填写 Google 密码或 2FA；
+- 用户只在这个独立 Chrome 中正常完成认证。
+
+登录完成并关闭认证 Chrome 后，Harness 再使用同一个 dedicated profile 进入自动测试阶段。因此 ChatGPT 登录态天然保留，不需要导出 `cookies.json`、`storageState.json`、Token 或 Google Account session。
+
+## Dedicated Chrome Profile
+
+真实认证与 Real Chrome Smoke 使用：
 
 ```text
 .csg-smoke/
-  TEST_PROFILE_SENTINEL
-  profile/
+  CHROME_PROFILE_SENTINEL
+  chrome-profile/
   config.json
   artifacts/
+  latest-run.txt
 ```
 
-`.csg-smoke/` is gitignored. The runner refuses to start unless the sentinel exists, the profile resolves to `.csg-smoke/profile`, and the path is not a known Chrome / Edge / Chromium `User Data`, `Default`, or numbered daily profile path.
+`.csg-smoke/` 整体 gitignored。
 
-Cookies, Local Storage, IndexedDB and the ChatGPT login session stay inside `.csg-smoke/profile`. They are never exported to a `storageState.json`, GitHub Actions, or the repository.
+Profile Guard 会拒绝：
 
-## Playwright browser choice
+- 用户日常 Chrome `User Data`；
+- `Default`；
+- `Profile N`；
+- Edge / Chromium 日常 Profile；
+- 缺少 `CHROME_PROFILE_SENTINEL` 的目录；
+- 不在 `.csg-smoke/` 下的路径。
 
-Current Playwright extension-testing guidance requires a persistent Chromium context. Google Chrome and Microsoft Edge no longer support the command-line flags Playwright needs to sideload unpacked extensions, so the harness uses the Chromium bundled with Playwright and discovers the MV3 extension id from its service worker.
+Harness 不 attach、关闭、重启或修改 daily Chrome。
 
-Install only the required browser once:
+## Chrome 136+ 与 localhost CDP
+
+自动测试阶段使用 branded Chrome + CDP，但始终配合独立 `--user-data-dir=.csg-smoke/chrome-profile`。
+
+Harness 自己在 `127.0.0.1` 申请一个随机空闲端口，然后显式启动：
+
+```text
+--remote-debugging-address=127.0.0.1
+--remote-debugging-port=<random-local-port>
+--user-data-dir=<dedicated chrome-profile>
+```
+
+CDP 地址只允许：
+
+```text
+127.0.0.1
+localhost
+::1
+```
+
+`0.0.0.0`、LAN 地址和外部地址会被拒绝。
+
+Harness 只关闭自己启动并持有 PID 的 dedicated Chrome，不使用 `taskkill chrome.exe` 之类的全局操作。
+
+## Debug extension 如何加载
+
+branded Chrome 不再依赖 `--load-extension`。
+
+每次 Real Chrome Smoke：
+
+1. 执行当前源码的 `build:debug`；
+2. 连接 dedicated Chrome 的 localhost CDP；
+3. 调用 Chrome DevTools Protocol `Extensions.loadUnpacked`，路径严格为仓库当前 `dist/`；
+4. 调用 `Extensions.getExtensions` 确认：
+   - extension ID 有效；
+   - extension enabled；
+   - 实际加载路径就是当前 `dist/`；
+5. 从实际已加载扩展自身读取 `content.js`，确认其中包含本次预期 Build ID；
+6. Build ID 不一致则拒绝继续 Smoke。
+
+因此不需要用户手工 `Load unpacked`，也不会把整个 Chrome Profile 复制到 Playwright Chromium。
+
+## Auth Gate
+
+开发验证命令：
 
 ```bash
-npx playwright install chromium
+node scripts/smoke/auth-probe.mjs --launch-auth
+node scripts/smoke/auth-probe.mjs --verify
 ```
 
-## First-time setup
+只有真实 `--verify` 得到：
 
-Run:
-
-```bash
-npm run smoke:setup
+```text
+CHATGPT_SESSION_ESTABLISHED
+loggedIn = true
 ```
 
-Setup does the following:
+才能记录 Real Google / ChatGPT Login PASS。
 
-1. Creates the dedicated profile and sentinel.
-2. Builds the current Debug extension.
-3. Starts an isolated headed Playwright Chromium window.
-4. Opens `https://chatgpt.com/`.
-5. Lets you log in manually once.
-6. Lets you open one existing long conversation and captures its `/c/<id>` locally.
-7. Optionally captures up to two existing conversations for SPA switching.
-8. Saves only those local ids to `.csg-smoke/config.json`.
+Google unsafe-browser 已有独立分类：
 
-You never need to copy a conversation id by hand.
-
-## Daily smoke
-
-Default isolated smoke:
-
-```bash
-npm run smoke:chrome
+```text
+GOOGLE_OAUTH_UNSAFE_BROWSER
 ```
 
-Isolated headed smoke for UI / scroll / layout release gating:
+Auth detection 不保存 Google 页面 HTML、账号邮箱、Account chooser、密码字段、2FA 内容或 Google screenshot。
 
-```bash
-npm run smoke:chrome:headed
+## 长会话绑定
+
+若 `.csg-smoke/config.json` 尚未保存 `longConversationId`，Harness 会打开已登录的 dedicated Chrome 并提示：
+
+```text
+请在左侧历史记录中点开一个很长、容易出现问题的旧聊天。
 ```
 
-An extended headed alias is also available:
+用户只需点一次。
 
-```bash
-npm run smoke:chrome:extended
-```
-
-The default runner is read-only with respect to the ChatGPT account. It may change Session Guard settings inside the dedicated extension profile, but it does not send messages, create conversations, rename/archive/delete chats, upload files, vote, change account settings, invoke tools, or start voice.
+Harness 自动识别 `/c/<conversation-id>`，conversation ID 只保存在本机 gitignored 的 `.csg-smoke/config.json` 中，不写 GitHub log、CI、issue 或 support ZIP。
 
 ## Smoke coverage
 
-The runner checks:
+Real Chrome runner 检查：
 
-- Debug extension loading and MV3 service-worker discovery.
-- Debug build id versus the current Git working tree.
-- Chinese popup UI and Debug-only controls.
-- Ultra Lite with one visible round and Manual-only older history.
-- DOM versus Session Guard Debug metrics.
-- Placeholder/old-turn visibility contradictions.
-- Unexpected older-page requests caused by scrolling.
-- A bounded upward-scroll sequence (12 attempts by default, hard limit 25).
-- Optional `A -> B -> C -> A` SPA switching when two switch conversations were configured during setup.
-- Stability Trace collection through the extension runtime.
+- branded Chrome / CDP 启动；
+- Debug extension 自动加载；
+- loaded extension Build ID；
+- 中文 popup；
+- Ultra Lite；
+- Visible history = 1 round；
+- Older history = Manual only；
+- DOM vs Session Guard Debug metrics；
+- placeholder / old-turn visibility contradiction；
+- 滚动过程中意外 older-page request；
+- 默认 12 次、有硬上限 25 次的 bounded scroll；
+- Stability Trace；
+- 配置了样本时的 SPA switching。
 
-The current Ultra Lite scroll-leak regression is deliberately a failing target. Do not weaken its assertions to make the smoke green.
+当前 Ultra Lite scroll leak 是故意保留的真实回归目标。不要为了让 Smoke 变绿修改断言。
+
+关键失败码包括：
+
+```text
+VISIBLE_HISTORY_BOUNDARY_EXCEEDED
+PLACEHOLDER_VISIBILITY_CONTRADICTION
+METRICS_DOM_DIVERGENCE
+UNEXPECTED_OLDER_PAGE_NETWORK_REQUEST
+```
 
 ## Safety stops
 
-The runner fails fast on:
+立即停止：
 
-- HTTP 429: `ABORTED_RATE_LIMIT`
-- Classified conversation-history request amplification: `ABORTED_REQUEST_AMPLIFICATION`
-- An unexpected ChatGPT conversation write request: `ABORTED_UNEXPECTED_WRITE`
-- Lost login: `ABORTED_LOGIN_LOST`
-- Extension/profile/build safety failures
+```text
+ABORTED_RATE_LIMIT
+ABORTED_REQUEST_AMPLIFICATION
+ABORTED_UNEXPECTED_WRITE
+ABORTED_LOGIN_LOST
+```
 
-It does not retry a 429 storm and does not run an unbounded scroll or navigation loop.
+检测到 HTTP 429 / Too many requests 后不会自动重试。
 
 ## Evidence and privacy
 
-Each run gets a unique local directory:
+每次运行写入：
 
 ```text
 .csg-smoke/artifacts/<run-id>/
 ```
 
-It can contain:
+可能包含：
 
 ```text
 smoke-report.json
@@ -139,24 +217,51 @@ dom-summary.json
 screenshot-failure-masked.png
 ```
 
-The network file records only timestamps, method, status, sanitized pathname, query-key names, classification, a per-run conversation hash, and duration. It never records request/response bodies, headers, cookies, authorization data, prompts, answers, file bodies, or image bodies.
+FAIL / ABORTED 时可生成：
 
-DOM evidence is structural only: counts, visibility booleans, placeholder state, CSS class counts and scroll metrics. Raw HTML is not saved.
+```text
+session-guard-smoke-<run-id>.zip
+```
 
-Failure screenshots mask conversation turns, sidebar conversation links, account/profile UI and avatars. Unmasked screenshots are not written by the harness.
+ZIP 采用 allowlist，绝不包含：
+
+- `chrome-profile/`；
+- Cookies；
+- Login Data；
+- Local Storage；
+- IndexedDB；
+- Google Account session；
+- Token；
+- raw HAR；
+- raw HTML；
+- conversation text。
+
+网络证据只记录脱敏路径、method、status、query key、classification、per-run conversation hash 和 duration，不记录 headers/body/cookie/authorization。
 
 ## CI policy
 
-Real ChatGPT smoke is **LOCAL ONLY**. GitHub Actions should continue to run unit tests, typecheck, lint, build, sanitizer/config/profile tests and other synthetic checks, but must not receive a ChatGPT profile, cookies, tokens, or real conversation ids.
+真实 Google / ChatGPT / Chrome Smoke 仅在本机运行。
 
-## Cleaning the test profile
+GitHub Actions 只应运行：
 
-Close any smoke browser and delete:
+- typecheck；
+- lint；
+- unit tests；
+- build；
+- Debug build；
+- sanitizer / Profile Guard / Auth state machine 测试；
+- audit。
+
+CI 不接收真实 ChatGPT profile、Cookie、Token、Google session 或 conversation ID。
+
+## 清理 dedicated 环境
+
+关闭 Session Guard 专用 Chrome 后删除：
 
 ```text
 .csg-smoke/
 ```
 
-Then run `npm run smoke:setup` again when you want a fresh isolated login.
+即可从零开始。
 
-Deleting `.csg-smoke/` does not touch the normal Chrome profile.
+删除 `.csg-smoke/` 不会修改用户日常 Chrome Profile。

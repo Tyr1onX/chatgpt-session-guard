@@ -9,7 +9,11 @@ export function smokePaths(root = process.cwd()) {
     configPath: path.join(smokeRoot, 'config.json'),
     sentinelPath: path.join(smokeRoot, 'TEST_PROFILE_SENTINEL'),
     artifactsDir: path.join(smokeRoot, 'artifacts'),
-    distDir: path.resolve(root, 'dist')
+    distDir: path.resolve(root, 'dist'),
+    chromeProfileDir: path.join(smokeRoot, 'chrome-profile'),
+    chromeSentinelPath: path.join(smokeRoot, 'CHROME_PROFILE_SENTINEL'),
+    chromePreferencesPath: path.join(smokeRoot, 'chrome-profile', 'Default', 'Preferences'),
+    authDiagnosticPath: path.join(smokeRoot, 'auth-diagnostic.json')
   };
 }
 

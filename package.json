@@ -12,6 +12,7 @@
     "test:watch": "vitest",
     "benchmark:synthetic": "node scripts/synthetic-benchmark.mjs",
     "smoke:auto": "node scripts/smoke/bootstrap.mjs",
+    "smoke:auth:probe": "node scripts/smoke/auth-probe.mjs",
     "smoke:setup": "node scripts/smoke/setup.mjs",
     "smoke:chrome": "node scripts/smoke/run.mjs",
     "smoke:chrome:headed": "node scripts/smoke/run.mjs --headed",

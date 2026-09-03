@@ -191,6 +191,21 @@ export async function getStabilityTrace(extensionPage) {
   return sendToChatTab(extensionPage, { type: 'csg:stability-trace-get' });
 }
 
+export async function waitForLoadedBuildId(extensionPage, { timeoutMs = 10_000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const state = await getExtensionState(extensionPage);
+      const buildId = state?.benchmark?.environment?.buildId ?? state?.longStress?.buildId ?? null;
+      if (typeof buildId === 'string' && buildId.length > 0) return buildId;
+    } catch {
+      // The content script may still be attaching after navigation or extension startup.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 350));
+  }
+  throw new Error('EXTENSION_RUNTIME_BUILD_ID_UNAVAILABLE');
+}
+
 export async function waitForGuardStable(extensionPage, { timeoutMs = 10_000 } = {}) {
   const started = Date.now();
   let previous = null;

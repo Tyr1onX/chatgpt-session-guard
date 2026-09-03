@@ -1,9 +1,10 @@
 import path from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import { assertDedicatedProfile } from './profile-guard.mjs';
+import { assertChromeProfile } from './chrome-profile-guard.mjs';
 import { createRunId } from './paths.mjs';
 import { loadSmokeConfig } from './config.mjs';
-import { buildDebugExtension, launchSmokeBrowser, verifyDebugBuild } from './browser.mjs';
+import { buildDebugExtension, closeSmokeBrowser, launchRealChromeSmokeBrowser, launchSmokeBrowser, verifyDebugBuild, verifyLoadedExtensionBundleBuild, verifyRuntimeBuildId } from './browser.mjs';
 import {
   configureUltraLite,
   getExtensionState,
@@ -16,7 +17,8 @@ import {
   readDomSummary,
   scrollUpOnce,
   trySpaSwitch,
-  waitForGuardStable
+  waitForGuardStable,
+  waitForLoadedBuildId
 } from './chatgpt.mjs';
 import { SanitizedNetworkMonitor } from './network-monitor.mjs';
 import { createRunSalt, sanitizeForEvidence } from './sanitizer.mjs';
@@ -42,6 +44,7 @@ function safetyStatus(code) {
 
 const args = new Set(process.argv.slice(2));
 const headed = args.has('--headed');
+const realChrome = args.has('--real-chrome');
 const extended = args.has('--extended');
 const autoUx = args.has('--auto-ux');
 const requestedAttemptsArg = process.argv.find((item) => item.startsWith('--scroll-attempts='));
@@ -57,6 +60,7 @@ const domEvidence = { baseline: null, attempts: [], final: null };
 let paths;
 let runDir;
 let context;
+let launchedBrowser;
 let chatPage;
 let monitor;
 let identity = { commitSha: 'unknown', buildId: 'unknown' };
@@ -65,7 +69,7 @@ let stabilityTrace = null;
 let stabilityReport = null;
 
 try {
-  paths = await assertDedicatedProfile(root);
+  paths = realChrome ? await assertChromeProfile(root) : await assertDedicatedProfile(root);
   const config = await loadSmokeConfig(root);
   runDir = path.join(paths.artifactsDir, createRunId());
   await mkdir(runDir, { recursive: true });
@@ -74,7 +78,10 @@ try {
   const extensionCheckStarted = performance.now();
   const buildMeta = await verifyDebugBuild({ root, distDir: paths.distDir, expectedBuildId: identity.buildId });
 
-  const launched = await launchSmokeBrowser({ root, headed });
+  const launched = realChrome
+    ? await launchRealChromeSmokeBrowser({ root })
+    : await launchSmokeBrowser({ root, headed });
+  launchedBrowser = launched;
   context = launched.context;
   browserVersion = launched.browserVersion;
   monitor = new SanitizedNetworkMonitor(context, { salt }).start();
@@ -113,6 +120,12 @@ try {
   if (!(await isLoggedIn(chatPage))) {
     pushUnique(safetyStops, 'ABORTED_LOGIN_LOST');
     throw new Error('ABORTED_LOGIN_LOST');
+  }
+  if (realChrome) {
+    await verifyLoadedExtensionBundleBuild(extensionPage, identity.buildId);
+  } else {
+    const loadedBuildId = await waitForLoadedBuildId(extensionPage);
+    verifyRuntimeBuildId(loadedBuildId, identity.buildId);
   }
   if (monitor.abortReason) {
     pushUnique(safetyStops, monitor.abortReason);
@@ -303,9 +316,10 @@ try {
     commitSha: identity.commitSha,
     startedAt,
     finishedAt,
-    browser: 'Playwright Chromium',
+    browser: realChrome ? 'Google Chrome via localhost CDP' : 'Playwright Chromium',
     browserVersion,
     headed,
+    profileKind: realChrome ? 'dedicated-branded-chrome-profile' : 'dedicated-persistent-smoke-profile',
     tests,
     safetyStops,
     networkSummary,
@@ -342,6 +356,7 @@ try {
   if (safetyStops.includes('ABORTED_RATE_LIMIT')) console.log('已检测到 HTTP 429，为避免继续触发限流，测试没有重试。');
   console.log('结果：' + report.overallStatus);
 
-  if (context) await context.close();
+  if (launchedBrowser) await closeSmokeBrowser(launchedBrowser);
+  else if (context) await context.close();
   if (report.overallStatus !== 'PASS') process.exitCode = 1;
 }

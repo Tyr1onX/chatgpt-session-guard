@@ -15,6 +15,8 @@ describe('bootstrap support bundle', () => {
     expect(isAllowedSupportEntry('smoke-report.md')).toBe(true);
     expect(isAllowedSupportEntry('sanitized-network.json')).toBe(true);
     expect(isAllowedSupportEntry('screenshot-failure-masked.png')).toBe(true);
+    expect(isAllowedSupportEntry('auth-diagnostic.json')).toBe(true);
+    expect(isAllowedSupportEntry('bootstrap.log')).toBe(true);
   });
 
   it('rejects profile, Cookie, token, raw HAR and raw HTML names', () => {
@@ -34,6 +36,21 @@ describe('bootstrap support bundle', () => {
       const zipPath = await createSupportZip(runDir);
       const entries = unzipSync(new Uint8Array(await readFile(zipPath)));
       expect(Object.keys(entries).sort()).toEqual(['sanitized-network.json', 'smoke-report.md']);
+    } finally {
+      await rm(runDir, { recursive: true, force: true });
+    }
+  });
+
+  it('packages auth diagnostics without profile, cookies, Google HTML or account data files', async () => {
+    const runDir = await mkdtemp(path.join(os.tmpdir(), 'csg-auth-support-'));
+    try {
+      await writeFile(path.join(runDir, 'auth-diagnostic.json'), JSON.stringify({ code: 'CHATGPT_SESSION_NOT_ESTABLISHED', containsCookieValues: false }));
+      await writeFile(path.join(runDir, 'bootstrap.log'), 'controlled bootstrap status only');
+      await writeFile(path.join(runDir, 'Cookies'), 'secret');
+      await writeFile(path.join(runDir, 'google-account.html'), '<html>secret</html>');
+      const zipPath = await createSupportZip(runDir);
+      const entries = unzipSync(new Uint8Array(await readFile(zipPath)));
+      expect(Object.keys(entries).sort()).toEqual(['auth-diagnostic.json', 'bootstrap.log']);
     } finally {
       await rm(runDir, { recursive: true, force: true });
     }
