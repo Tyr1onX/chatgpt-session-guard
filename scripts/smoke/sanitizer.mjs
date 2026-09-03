@@ -1,6 +1,10 @@
 import { createHash, randomBytes } from 'node:crypto';
 
 const SENSITIVE_KEY = /(authorization|cookie|body|prompt|answer|content|html|text|token|secret|password)/i;
+const BOOTSTRAP_READ_PATHS = new Set([
+  '/backend-api/conversation/init',
+  '/backend-api/f/conversation/prepare'
+]);
 
 export function createRunSalt() {
   return randomBytes(16).toString('hex');
@@ -35,6 +39,9 @@ export function sanitizeUrl(rawUrl, salt) {
 /** @param {string} pathname @param {string[]} queryKeys */
 export function classifyRequest(pathname, queryKeys) {
   const lower = pathname.toLowerCase();
+  if (BOOTSTRAP_READ_PATHS.has(lower)) return 'bootstrap-read';
+  if (!lower.startsWith('/backend-api/')) return 'other';
+
   const historyLike = lower.includes('/conversation') || lower.includes('/conversations');
   if (!historyLike) return 'other';
   if (queryKeys.includes('before')) return 'older-page';

@@ -50,6 +50,27 @@ describe('smoke network safety monitor', () => {
     monitor.stop();
   });
 
+  it('does not count static conversation assets or bootstrap reads as history amplification', () => {
+    const context = new FakeContext();
+    const monitor = new SanitizedNetworkMonitor(context, { salt: 'test', historyLimit: 2, windowMs: 10_000 }).start();
+    const urls = [
+      'https://chatgpt.com/cdn/assets/conversation-small-example.js',
+      'https://chatgpt.com/cdn/assets/conversation-small-example.css',
+      'https://chatgpt.com/backend-api/conversation/init',
+      'https://chatgpt.com/backend-api/f/conversation/prepare',
+      'https://chatgpt.com/backend-api/f/conversation/prepare'
+    ];
+    for (const url of urls) {
+      const req = request(url.includes('/backend-api/') ? 'POST' : 'GET', url);
+      context.emit('request', req);
+      context.emit('response', response(req, 200));
+    }
+    expect(monitor.abortReason).toBeNull();
+    expect(monitor.summary().historyRequests).toBe(0);
+    expect(monitor.summary().requestAmplification).toBe(false);
+    monitor.stop();
+  });
+
   it.each([
     'https://chatgpt.com/backend-api/conversation/init',
     'https://chatgpt.com/backend-api/f/conversation/prepare'

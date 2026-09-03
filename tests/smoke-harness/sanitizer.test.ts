@@ -1,4 +1,5 @@
 import {
+  classifyRequest,
   evidenceContainsSensitiveMaterial,
   sanitizeForEvidence,
   sanitizeNetworkObservation,
@@ -53,6 +54,18 @@ describe('smoke evidence sanitizer', () => {
     expect(record.requestClassification).toBe('older-page');
     expect(JSON.stringify(record)).not.toContain('cursor-secret');
     expect(JSON.stringify(record)).not.toContain('bar');
+  });
+
+  it('classifies only backend API conversation traffic as history-like', () => {
+    expect(classifyRequest('/cdn/assets/conversation-small-example.js', [])).toBe('other');
+    expect(classifyRequest('/cdn/assets/conversation-small-example.css', [])).toBe('other');
+    expect(classifyRequest('/backend-api/conversation/fake-conversation-12345678', [])).toBe('conversation-history');
+    expect(classifyRequest('/backend-api/conversations', ['limit', 'offset'])).toBe('conversation-list');
+  });
+
+  it('classifies the exact read-only bootstrap endpoints separately from history amplification', () => {
+    expect(classifyRequest('/backend-api/conversation/init', [])).toBe('bootstrap-read');
+    expect(classifyRequest('/backend-api/f/conversation/prepare', [])).toBe('bootstrap-read');
   });
 
   it('marks raw sensitive evidence as unsafe', () => {
