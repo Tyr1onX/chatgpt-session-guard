@@ -36,7 +36,7 @@ function emitStats(type: GuardStatsEvent['type']): void {
 }
 
 function isSessionOpenRequest(classification: HistoryClassification): boolean {
-  return classification.kind === 'legacy-conversation' || classification.kind === 'paginated-conversation-history';
+  return classification.kind === 'legacy-conversation-history' || classification.kind === 'paginated-conversation-history';
 }
 
 function emitHistoryRequestStats(classification: HistoryClassification): void {
