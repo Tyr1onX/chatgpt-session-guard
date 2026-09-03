@@ -1,0 +1,46 @@
+name: Temporary Field Debug Package
+
+on:
+  push:
+    branches:
+      - artifact/field-debug-package
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact field recorder commit
+        uses: actions/checkout@v4
+        with:
+          ref: 28e89b0e8c6692e41b49d1685f309bbc7af10c28
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build field package
+        run: npm run build:field
+
+      - name: Add install guide
+        run: cp FIELD-DEBUG-INSTALL.md dist/FIELD-DEBUG-INSTALL.md
+
+      - name: Verify expected field build id
+        run: grep -R "28e89b0e8c66-field" dist/*.js >/dev/null
+
+      - name: Upload installable package
+        uses: actions/upload-artifact@v4
+        with:
+          name: ChatGPT-Session-Guard-Field-Debug
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
