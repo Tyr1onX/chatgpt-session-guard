@@ -2,6 +2,11 @@ node_modules/
 dist/
 coverage/
 .benchmark/
+.csg-smoke/
+smoke-profile/
+playwright/.auth/
+artifacts/smoke/
+*.har
 _research-*/
 *.log
 .DS_Store

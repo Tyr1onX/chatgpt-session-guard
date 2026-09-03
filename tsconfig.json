@@ -12,8 +12,10 @@
     "noImplicitOverride": true,
     "useDefineForClassFields": true,
     "skipLibCheck": true,
+    "allowJs": true,
+    "checkJs": false,
     "allowImportingTsExtensions": false,
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts", "vitest.config.ts", "eslint.config.js"]
+  "include": ["src/**/*.ts", "scripts/**/*.ts", "scripts/**/*.mjs", "tests/**/*.ts", "vitest.config.ts", "eslint.config.js"]
 }

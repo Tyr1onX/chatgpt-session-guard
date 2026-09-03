@@ -3,11 +3,15 @@ import globals from 'globals';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['dist/**', '_research-*/**', '.benchmark/**', 'coverage/**'] },
+  { ignores: ['dist/**', '_research-*/**', '.benchmark/**', '.csg-smoke/**', 'coverage/**'] },
   js.configs.recommended,
   {
     files: ['scripts/**/*.mjs'],
     languageOptions: { globals: { ...globals.node } }
+  },
+  {
+    files: ['scripts/smoke/**/*.mjs'],
+    languageOptions: { globals: { ...globals.node, ...globals.browser, chrome: 'readonly' } }
   },
   ...tseslint.configs.recommended,
   {
