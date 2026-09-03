@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { SanitizedNetworkMonitor } from '../../scripts/smoke/network-monitor.mjs';
+import { SanitizedNetworkMonitor, classifyConversationRequestSafety } from '../../scripts/smoke/network-monitor.mjs';
 
 class FakeContext extends EventEmitter {
   override on(event: string, listener: (...args: unknown[]) => void): this {
@@ -50,13 +50,46 @@ describe('smoke network safety monitor', () => {
     monitor.stop();
   });
 
-  it('aborts on an unexpected ChatGPT conversation write request', () => {
+  it.each([
+    'https://chatgpt.com/backend-api/conversation/init',
+    'https://chatgpt.com/backend-api/f/conversation/prepare'
+  ])('allows the exact read-only conversation bootstrap POST %s', (url) => {
+    expect(classifyConversationRequestSafety('POST', url)).toBe('BOOTSTRAP_READ');
+    const context = new FakeContext();
+    const monitor = new SanitizedNetworkMonitor(context, { salt: 'test' }).start();
+    const req = request('POST', url);
+    context.emit('request', req);
+    expect(monitor.abortReason).toBeNull();
+    monitor.stop();
+  });
+
+  it('keeps an unknown conversation POST fail-safe', () => {
+    const context = new FakeContext();
+    const monitor = new SanitizedNetworkMonitor(context, { salt: 'test' }).start();
+    const req = request('POST', 'https://chatgpt.com/backend-api/conversation/something-unknown');
+    context.emit('request', req);
+    expect(classifyConversationRequestSafety(req.method(), req.url())).toBe('UNKNOWN_MUTATION');
+    expect(monitor.abortReason).toBe('ABORTED_UNEXPECTED_WRITE');
+    monitor.stop();
+  });
+
+  it('aborts on a known ChatGPT conversation POST mutation', () => {
     const context = new FakeContext();
     const monitor = new SanitizedNetworkMonitor(context, { salt: 'test' }).start();
     const req = request('POST', 'https://chatgpt.com/backend-api/conversation');
     context.emit('request', req);
     expect(monitor.abortReason).toBe('ABORTED_UNEXPECTED_WRITE');
     expect(monitor.summary().unexpectedWrite).toBe(true);
+    monitor.stop();
+  });
+
+  it.each(['PUT', 'PATCH', 'DELETE'])('keeps %s conversation mutations fail-safe', (method) => {
+    const context = new FakeContext();
+    const monitor = new SanitizedNetworkMonitor(context, { salt: 'test' }).start();
+    const req = request(method, 'https://chatgpt.com/backend-api/conversation/fake-conversation-0001');
+    context.emit('request', req);
+    expect(classifyConversationRequestSafety(req.method(), req.url())).toBe('UNKNOWN_MUTATION');
+    expect(monitor.abortReason).toBe('ABORTED_UNEXPECTED_WRITE');
     monitor.stop();
   });
 });

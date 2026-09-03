@@ -4,6 +4,28 @@ import { sanitizeNetworkObservation } from './sanitizer.mjs';
 const DEFAULT_WINDOW_MS = 10_000;
 const DEFAULT_HISTORY_LIMIT = 8;
 const AMPLIFICATION_CLASSES = new Set(['conversation-history', 'older-page', 'history-like']);
+const CONVERSATION_BOOTSTRAP_POSTS = new Set([
+  '/backend-api/conversation/init',
+  '/backend-api/f/conversation/prepare'
+]);
+const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+export function classifyConversationRequestSafety(method, rawUrl) {
+  const normalizedMethod = String(method ?? '').toUpperCase();
+  if (!MUTATING_METHODS.has(normalizedMethod)) return 'READ';
+
+  try {
+    const url = new URL(rawUrl);
+    if (url.hostname !== 'chatgpt.com') return 'READ';
+    if (normalizedMethod === 'POST' && CONVERSATION_BOOTSTRAP_POSTS.has(url.pathname)) {
+      return 'BOOTSTRAP_READ';
+    }
+    if (/\/conversation(?:\/|$)/i.test(url.pathname)) return 'UNKNOWN_MUTATION';
+    return 'READ';
+  } catch {
+    return 'READ';
+  }
+}
 
 export class SanitizedNetworkMonitor {
   constructor(context, { salt = '', historyLimit = DEFAULT_HISTORY_LIMIT, windowMs = DEFAULT_WINDOW_MS } = {}) {
@@ -33,15 +55,9 @@ export class SanitizedNetworkMonitor {
   onRequest(request) {
     this.starts.set(request, performance.now());
     if (this.abortReason) return;
-    const method = request.method().toUpperCase();
-    if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return;
-    try {
-      const url = new URL(request.url());
-      if (url.hostname === 'chatgpt.com' && /\/conversation(?:\/|$)/i.test(url.pathname)) {
-        this.abortReason = 'ABORTED_UNEXPECTED_WRITE';
-      }
-    } catch {
-      // Invalid URLs are ignored; evidence remains sanitized in the response path.
+    const safetyClass = classifyConversationRequestSafety(request.method(), request.url());
+    if (safetyClass === 'UNKNOWN_MUTATION') {
+      this.abortReason = 'ABORTED_UNEXPECTED_WRITE';
     }
   }
 
